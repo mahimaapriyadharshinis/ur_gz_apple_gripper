@@ -19,6 +19,61 @@ DEXHAND_OPEN = [0.0] * 21
 DEXHAND_CLOSED = [0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9, 0.9, 0.5, 0.5, 0.5, 0.5,
                   0.3, 0.0, 0.9, 0.5, 0.0, 0.0, 0.0, 0.0, 0.6]
 
+D = [0.1625, 0, 0, 0.1333, 0.0997, 0.0996]
+A = [0, -0.4250, -0.3922, 0, 0, 0]
+ALPHA = [np.pi/2, 0, 0, np.pi/2, -np.pi/2, 0]
+
+
+def _dh(theta, d, a, alpha):
+    ct, st = np.cos(theta), np.sin(theta)
+    ca, sa = np.cos(alpha), np.sin(alpha)
+    return np.array([
+        [ct, -st*ca,  st*sa, a*ct],
+        [st,  ct*ca, -ct*sa, a*st],
+        [0,       sa,     ca,    d],
+        [0,        0,      0,    1],
+    ])
+
+
+def forward_kinematics(thetas):
+    T = np.eye(4)
+    for i in range(6):
+        T = T @ _dh(thetas[i], D[i], A[i], ALPHA[i])
+    return T
+
+
+def solve_ik(target_xyz, wrist2=-1.5708, wrist3=0.0, max_iter=200, init_pan=None):
+    target = np.array(target_xyz)
+    if init_pan is None:
+        init_pan = np.arctan2(target[1], target[0])
+    q = np.array([init_pan, -1.2, 1.8, -2.1])
+
+    def tool_pos(qv):
+        thetas = [qv[0], qv[1], qv[2], qv[3], wrist2, wrist3]
+        return forward_kinematics(thetas)[:3, 3]
+
+    for _ in range(max_iter):
+        f = tool_pos(q) - target
+        if np.linalg.norm(f) < 1e-7:
+            break
+        J = np.zeros((3, 4))
+        eps = 1e-6
+        base = tool_pos(q)
+        for i in range(4):
+            dq = q.copy()
+            dq[i] += eps
+            J[:, i] = (tool_pos(dq) - base) / eps
+        JT = J.T
+        step = JT @ np.linalg.solve(J @ JT + 1e-6*np.eye(3), f)
+        q -= step
+
+    final_pos = tool_pos(q)
+    error = np.linalg.norm(final_pos - target)
+    if error > 0.005:
+        return None
+    return [float(q[0]), float(q[1]), float(q[2]), float(q[3]), float(wrist2), float(wrist3)]
+
+
 class PickAndPlaceNode(Node):
     def __init__(self):
         super().__init__('pick_and_place_node')
@@ -30,11 +85,8 @@ class PickAndPlaceNode(Node):
             JointTrajectory, DEXHAND_TRAJ_TOPIC, 10)
         self.attach_pub = self.create_publisher(Empty, '/attach', 10)
         self.detach_pub = self.create_publisher(Empty, '/detach', 10)
-        self.a2 = 0.425
-        self.a3 = 0.3922
         self.z_shoulder = 0.6075
         self.hand_length = 0.18
-        self.wrist_offset = 0.109
         self.target_pose = None
 
     def pose_callback(self, msg):
@@ -47,28 +99,12 @@ class PickAndPlaceNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         return self.target_pose
 
-    def compute_3d_palm_down_ik(self, x, y, z_top):
-        pan = np.arctan2(y, x)
-        r = np.sqrt(x**2 + y**2)
-        r_corrected = np.sqrt(max(r**2 - self.wrist_offset**2, 0.0))
-        z_wrist = z_top + self.hand_length
-        dx = r_corrected
-        dz = z_wrist - self.z_shoulder
-        D = np.sqrt(dx**2 + dz**2)
-        max_reach = self.a2 + self.a3
-        if D > max_reach or D < abs(self.a2 - self.a3):
-            self.get_logger().error(f"UNREACHABLE: ({x:.3f},{y:.3f},{z_top:.3f}) D={D:.3f}m")
-            return None
-        cos_elbow = np.clip((D**2 - self.a2**2 - self.a3**2) / (2 * self.a2 * self.a3), -1.0, 1.0)
-        elbow = np.arccos(cos_elbow)
-        gamma = np.arctan2(dz, dx)
-        cos_alpha = np.clip((self.a2**2 + D**2 - self.a3**2) / (2 * self.a2 * D), -1.0, 1.0)
-        alpha = np.arccos(cos_alpha)
-        phi_upper = gamma - alpha
-        shoulder_lift = phi_upper - (np.pi / 2.0)
-        phi_forearm = phi_upper + elbow
-        wrist_1 = -np.pi / 2.0 - phi_forearm
-        return [float(pan), float(shoulder_lift), float(elbow), float(wrist_1), -1.5708, 0.0]
+    def compute_joint_target(self, x, y, z_top):
+        target_base_frame = [x, y, (z_top + self.hand_length) - self.z_shoulder]
+        result = solve_ik(target_base_frame)
+        if result is None:
+            self.get_logger().error(f"UNREACHABLE: world target ({x:.3f},{y:.3f},{z_top:.3f})")
+        return result
 
     def send_arm_trajectory(self, joint_positions, duration_sec):
         msg = JointTrajectory()
@@ -101,12 +137,15 @@ class PickAndPlaceNode(Node):
             self.get_logger().warn(f"Pose bridge timed out, using fallback ({x},{y},{z_center})")
 
         z_top = z_center + 0.07
-        approach = self.compute_3d_palm_down_ik(x, y, z_top + 0.15)
-        grasp = self.compute_3d_palm_down_ik(x, y, z_top)
+        approach = self.compute_joint_target(x, y, z_top + 0.15)
+        grasp = self.compute_joint_target(x, y, z_top)
 
         if approach is None or grasp is None:
             self.get_logger().error("ABORTED: target unreachable.")
             return
+
+        self.get_logger().info(f"Approach joints: {[round(v,4) for v in approach]}")
+        self.get_logger().info(f"Grasp joints: {[round(v,4) for v in grasp]}")
 
         self.get_logger().info("1. Opening hand, moving overhead...")
         self.set_hand(DEXHAND_OPEN, 1.0)

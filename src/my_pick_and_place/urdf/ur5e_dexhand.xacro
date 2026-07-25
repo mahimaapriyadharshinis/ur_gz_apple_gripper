@@ -100,7 +100,7 @@
   </xacro:ur_robot>
 
   <!-- Attach DexHand Flush -->
-  <xacro:include filename="$(find dexhandv2_description)/urdf/dexhand_right.urdf"/>
+  <xacro:include filename="$(find dexhandv2_description)/urdf/dexhandv2_right.urdf"/>
   <joint name="tool0_to_dexhand" type="fixed">
     <parent link="tool0"/>
     <child link="dexhand_base_link"/>
@@ -132,7 +132,6 @@
       <detach_topic>/detach</detach_topic>
     </plugin>
   </gazebo>
-
 
   <ros2_control name="DexHandSystem" type="system">
     <hardware>

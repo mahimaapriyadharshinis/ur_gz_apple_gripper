@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import time
 import numpy as np
+import ikpy.chain
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
@@ -19,64 +20,57 @@ DEXHAND_OPEN = [0.0] * 21
 DEXHAND_CLOSED = [0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9, 0.9, 0.5, 0.5, 0.5, 0.5,
                   0.3, 0.0, 0.9, 0.5, 0.0, 0.0, 0.0, 0.0, 0.6]
 
-D = [0.1625, 0, 0, 0.1333, 0.0997, 0.0996]
-A = [0, -0.4250, -0.3922, 0, 0, 0]
-ALPHA = [np.pi/2, 0, 0, np.pi/2, -np.pi/2, 0]
+URDF_PATH = '/tmp/real_robot.urdf'
+ARM_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
+              'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 
 
-def _dh(theta, d, a, alpha):
-    ct, st = np.cos(theta), np.sin(theta)
-    ca, sa = np.cos(alpha), np.sin(alpha)
-    return np.array([
-        [ct, -st*ca,  st*sa, a*ct],
-        [st,  ct*ca, -ct*sa, a*st],
-        [0,       sa,     ca,    d],
-        [0,        0,      0,    1],
-    ])
+def build_chain():
+    chain = ikpy.chain.Chain.from_urdf_file(
+        URDF_PATH,
+        base_elements=[
+            'base_footprint', 'base_footprint_joint', 'mobile_base_link',
+            'base_joint', 'base_link',
+            'shoulder_pan_joint', 'shoulder_link',
+            'shoulder_lift_joint', 'upper_arm_link', 'elbow_joint',
+            'forearm_link', 'wrist_1_joint', 'wrist_1_link',
+            'wrist_2_joint', 'wrist_2_link', 'wrist_3_joint',
+            'wrist_3_link', 'wrist_3-flange', 'flange',
+            'flange-tool0', 'tool0', 'tool0_to_dexhand', 'dexhand_base_link'
+        ]
+    )
+    mask = [False] * len(chain.links)
+    for i, link in enumerate(chain.links):
+        if link.name in ARM_JOINTS:
+            mask[i] = True
+    chain.active_links_mask = mask
+    return chain
 
 
-def forward_kinematics(thetas):
-    T = np.eye(4)
-    for i in range(6):
-        T = T @ _dh(thetas[i], D[i], A[i], ALPHA[i])
-    return T
-
-
-def solve_ik(target_xyz, wrist2=-1.5708, wrist3=0.0, max_iter=200, init_pan=None):
-    target = np.array(target_xyz)
-    if init_pan is None:
-        init_pan = np.arctan2(target[1], target[0])
-    q = np.array([init_pan, -1.2, 1.8, -2.1])
-
-    def tool_pos(qv):
-        thetas = [qv[0], qv[1], qv[2], qv[3], wrist2, wrist3]
-        return forward_kinematics(thetas)[:3, 3]
-
-    for _ in range(max_iter):
-        f = tool_pos(q) - target
-        if np.linalg.norm(f) < 1e-7:
-            break
-        J = np.zeros((3, 4))
-        eps = 1e-6
-        base = tool_pos(q)
-        for i in range(4):
-            dq = q.copy()
-            dq[i] += eps
-            J[:, i] = (tool_pos(dq) - base) / eps
-        JT = J.T
-        step = JT @ np.linalg.solve(J @ JT + 1e-6*np.eye(3), f)
-        q -= step
-
-    final_pos = tool_pos(q)
-    error = np.linalg.norm(final_pos - target)
-    if error > 0.005:
+def solve_ik(chain, target_xyz, init=None):
+    if init is None:
+        init = [0.0] * len(chain.links)
+        for i, link in enumerate(chain.links):
+            if link.name == 'shoulder_lift_joint': init[i] = -1.2
+            if link.name == 'elbow_joint': init[i] = 1.2
+            if link.name == 'wrist_1_joint': init[i] = -1.5
+            if link.name == 'wrist_2_joint': init[i] = -1.5708
+    solution = chain.inverse_kinematics(target_xyz, initial_position=init)
+    achieved = chain.forward_kinematics(solution)[:3, 3]
+    error = np.linalg.norm(np.array(target_xyz) - achieved)
+    if error > 0.01:
         return None
-    return [float(q[0]), float(q[1]), float(q[2]), float(q[3]), float(wrist2), float(wrist3)]
+    joints = {}
+    for link, angle in zip(chain.links, solution):
+        if link.name in ARM_JOINTS:
+            joints[link.name] = float(angle)
+    return [joints[j] for j in ARM_JOINTS], solution
 
 
 class PickAndPlaceNode(Node):
     def __init__(self):
         super().__init__('pick_and_place_node')
+        self.chain = build_chain()
         self.pose_sub = self.create_subscription(
             Pose, '/model/red_block/pose', self.pose_callback, 10)
         self.arm_pub = self.create_publisher(
@@ -85,8 +79,6 @@ class PickAndPlaceNode(Node):
             JointTrajectory, DEXHAND_TRAJ_TOPIC, 10)
         self.attach_pub = self.create_publisher(Empty, '/attach', 10)
         self.detach_pub = self.create_publisher(Empty, '/detach', 10)
-        self.z_shoulder = 0.6075
-        self.hand_length = 0.18
         self.target_pose = None
 
     def pose_callback(self, msg):
@@ -99,17 +91,9 @@ class PickAndPlaceNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         return self.target_pose
 
-    def compute_joint_target(self, x, y, z_top):
-        target_base_frame = [x, y, (z_top + self.hand_length) - self.z_shoulder]
-        result = solve_ik(target_base_frame)
-        if result is None:
-            self.get_logger().error(f"UNREACHABLE: world target ({x:.3f},{y:.3f},{z_top:.3f})")
-        return result
-
     def send_arm_trajectory(self, joint_positions, duration_sec):
         msg = JointTrajectory()
-        msg.joint_names = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
-                            'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
+        msg.joint_names = ARM_JOINTS
         point = JointTrajectoryPoint()
         point.positions = joint_positions
         point.time_from_start.sec = int(duration_sec)
@@ -137,12 +121,20 @@ class PickAndPlaceNode(Node):
             self.get_logger().warn(f"Pose bridge timed out, using fallback ({x},{y},{z_center})")
 
         z_top = z_center + 0.07
-        approach = self.compute_joint_target(x, y, z_top + 0.15)
-        grasp = self.compute_joint_target(x, y, z_top)
+        approach_target = [x, y, z_top + 0.15]
+        grasp_target = [x, y, z_top]
 
-        if approach is None or grasp is None:
-            self.get_logger().error("ABORTED: target unreachable.")
+        approach_result = solve_ik(self.chain, approach_target)
+        if approach_result is None:
+            self.get_logger().error(f"UNREACHABLE: {approach_target}")
             return
+        approach, prev_solution = approach_result
+
+        grasp_result = solve_ik(self.chain, grasp_target, init=list(prev_solution))
+        if grasp_result is None:
+            self.get_logger().error(f"UNREACHABLE: {grasp_target}")
+            return
+        grasp, _ = grasp_result
 
         self.get_logger().info(f"Approach joints: {[round(v,4) for v in approach]}")
         self.get_logger().info(f"Grasp joints: {[round(v,4) for v in grasp]}")

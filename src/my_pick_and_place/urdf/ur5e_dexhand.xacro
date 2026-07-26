@@ -125,7 +125,7 @@
       <child_frame_id>base_footprint</child_frame_id>
     </plugin>
     <plugin filename="ignition-gazebo-detachable-joint-system" name="ignition::gazebo::systems::DetachableJoint">
-      <parent_link>tool0</parent_link>
+      <parent_link>wrist_3_link</parent_link>
       <child_model>red_block</child_model>
       <child_link>block_link</child_link>
       <attach_topic>/attach</attach_topic>

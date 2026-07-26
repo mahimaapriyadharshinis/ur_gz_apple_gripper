@@ -132,6 +132,12 @@ class PickAndPlaceNode(Node):
             self.get_logger().warn(f"Pose bridge timed out, using fallback ({x},{y},{z_center})")
 
         z_top = z_center + 0.10  # block is now 0.20m tall, half-height=0.10
+        # Real measured offset: the IK target link (dexhand_base_link, the
+        # wrist mount) sits 0.152m ABOVE the actual fingertip when the hand
+        # is oriented palm-down. Raise our target so the FINGERTIP -- not
+        # the wrist mount -- ends up at the block's true surface.
+        FINGERTIP_OFFSET = 0.152
+        z_top += FINGERTIP_OFFSET
         approach_target = [x, y, z_top + 0.15]
         grasp_target = [x, y, z_top]
 

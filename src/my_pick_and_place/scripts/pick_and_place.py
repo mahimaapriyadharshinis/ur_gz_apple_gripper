@@ -131,7 +131,7 @@ class PickAndPlaceNode(Node):
             x, y, z_center = 0.50, 0.00, 0.07
             self.get_logger().warn(f"Pose bridge timed out, using fallback ({x},{y},{z_center})")
 
-        z_top = z_center + 0.07
+        z_top = z_center + 0.10  # block is now 0.20m tall, half-height=0.10
         approach_target = [x, y, z_top + 0.15]
         grasp_target = [x, y, z_top]
 

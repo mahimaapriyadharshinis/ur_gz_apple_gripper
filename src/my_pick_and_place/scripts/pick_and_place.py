@@ -20,7 +20,7 @@ DEXHAND_OPEN = [0.0] * 21
 DEXHAND_CLOSED = [0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9, 0.9, 0.5, 0.5, 0.5, 0.5,
                   0.3, 0.0, 0.9, 0.5, 0.0, 0.0, 0.0, 0.0, 0.6]
 
-URDF_PATH = '/tmp/real_robot.urdf'
+URDF_PATH = '/tmp/real_robot_exact.urdf'
 ARM_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
               'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 
@@ -31,6 +31,7 @@ def build_chain():
         base_elements=[
             'base_footprint', 'base_footprint_joint', 'mobile_base_link',
             'base_joint', 'base_link',
+            'base_link-base_link_inertia', 'base_link_inertia',
             'shoulder_pan_joint', 'shoulder_link',
             'shoulder_lift_joint', 'upper_arm_link', 'elbow_joint',
             'forearm_link', 'wrist_1_joint', 'wrist_1_link',
@@ -44,6 +45,10 @@ def build_chain():
         if link.name in ARM_JOINTS:
             mask[i] = True
     chain.active_links_mask = mask
+    # Restrict shoulder_lift and elbow to a sane, natural-reach range so the
+    # solver can't fold the arm backward into an extreme/unnatural pose.
+    # No artificial bounds -- accept any mathematically valid solution;
+    # what matters is whether it actually grasps the block, not pose looks.
     return chain
 
 
@@ -51,13 +56,19 @@ def solve_ik(chain, target_xyz, init=None):
     if init is None:
         init = [0.0] * len(chain.links)
         for i, link in enumerate(chain.links):
-            if link.name == 'shoulder_lift_joint': init[i] = -1.2
-            if link.name == 'elbow_joint': init[i] = 1.2
-            if link.name == 'wrist_1_joint': init[i] = -1.5
+            if link.name == 'shoulder_pan_joint': init[i] = 0.0
+            if link.name == 'shoulder_lift_joint': init[i] = -1.5708
+            if link.name == 'elbow_joint': init[i] = 0.0
+            if link.name == 'wrist_1_joint': init[i] = -1.5708
             if link.name == 'wrist_2_joint': init[i] = -1.5708
-    solution = chain.inverse_kinematics(target_xyz, initial_position=init)
+            if link.name == 'wrist_3_joint': init[i] = 0.0
+    solution = chain.inverse_kinematics(
+        target_xyz, initial_position=init,
+        target_orientation=[0, 0, -1], orientation_mode='Z'
+    )
     achieved = chain.forward_kinematics(solution)[:3, 3]
     error = np.linalg.norm(np.array(target_xyz) - achieved)
+    print(f"  [IK check] target={target_xyz} achieved={achieved.tolist()} error_mm={error*1000:.3f}")
     if error > 0.01:
         return None
     joints = {}

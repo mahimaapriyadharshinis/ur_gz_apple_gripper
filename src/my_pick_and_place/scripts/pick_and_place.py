@@ -132,12 +132,7 @@ class PickAndPlaceNode(Node):
             self.get_logger().warn(f"Pose bridge timed out, using fallback ({x},{y},{z_center})")
 
         z_top = z_center + 0.10  # block is now 0.20m tall, half-height=0.10
-        # Real measured offset: the IK target link (dexhand_base_link, the
-        # wrist mount) sits 0.152m ABOVE the actual fingertip when the hand
-        # is oriented palm-down. Raise our target so the FINGERTIP -- not
-        # the wrist mount -- ends up at the block's true surface.
-        FINGERTIP_OFFSET = 0.152
-        z_top += FINGERTIP_OFFSET
+        z_top -= 0.03  # small correction: close remaining ~2-3cm visible gap
         approach_target = [x, y, z_top + 0.15]
         grasp_target = [x, y, z_top]
 
@@ -151,7 +146,7 @@ class PickAndPlaceNode(Node):
         if grasp_result is None:
             self.get_logger().error(f"UNREACHABLE: {grasp_target}")
             return
-        grasp, _ = grasp_result
+        grasp, grasp_full_solution = grasp_result
 
         self.get_logger().info(f"Approach joints: {[round(v,4) for v in approach]}")
         self.get_logger().info(f"Grasp joints: {[round(v,4) for v in grasp]}")
@@ -174,7 +169,19 @@ class PickAndPlaceNode(Node):
         time.sleep(0.5)
 
         self.get_logger().info("5. Lifting...")
-        self.send_arm_trajectory(approach, 2.5)
+        # PERMANENT FIX: instead of jumping to the separately-calculated
+        # 'approach' pose (which can require a different arm shape and
+        # rotate the wrist a lot, swinging the attached block), lift by
+        # solving IK for a point directly above the grasp point, seeded
+        # from the grasp solution itself -- keeps the same arm branch,
+        # same wrist orientation, minimal rotation, no swing.
+        lift_target = [x, y, z_top + 0.15]
+        lift_result = solve_ik(self.chain, lift_target, init=list(grasp_full_solution))
+        if lift_result is not None:
+            lift_joints, _ = lift_result
+            self.send_arm_trajectory(lift_joints, 2.5)
+        else:
+            self.send_arm_trajectory(approach, 2.5)  # fallback
         time.sleep(3.0)
 
         self.get_logger().info("TEST COMPLETE - check Gazebo viewport for actual result.")

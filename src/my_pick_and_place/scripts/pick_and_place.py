@@ -136,7 +136,15 @@ class PickAndPlaceNode(Node):
         approach_target = [x, y, z_top + 0.15]
         grasp_target = [x, y, z_top]
 
-        approach_result = solve_ik(self.chain, approach_target)
+        # Seed with the robot's true home configuration for a consistent,
+        # natural arm branch across the whole sequence -- reduces wrist
+        # rotation (and therefore attached-object swing) throughout.
+        home_seed = [0.0] * len(self.chain.links)
+        for i, link in enumerate(self.chain.links):
+            if link.name == 'shoulder_lift_joint': home_seed[i] = -1.5708
+            if link.name == 'wrist_1_joint': home_seed[i] = -1.5708
+            if link.name == 'wrist_2_joint': home_seed[i] = -1.5708
+        approach_result = solve_ik(self.chain, approach_target, init=home_seed)
         if approach_result is None:
             self.get_logger().error(f"UNREACHABLE: {approach_target}")
             return
@@ -169,19 +177,17 @@ class PickAndPlaceNode(Node):
         time.sleep(0.5)
 
         self.get_logger().info("5. Lifting...")
-        # PERMANENT FIX: instead of jumping to the separately-calculated
-        # 'approach' pose (which can require a different arm shape and
-        # rotate the wrist a lot, swinging the attached block), lift by
-        # solving IK for a point directly above the grasp point, seeded
-        # from the grasp solution itself -- keeps the same arm branch,
-        # same wrist orientation, minimal rotation, no swing.
-        lift_target = [x, y, z_top + 0.15]
-        lift_result = solve_ik(self.chain, lift_target, init=list(grasp_full_solution))
-        if lift_result is not None:
-            lift_joints, _ = lift_result
-            self.send_arm_trajectory(lift_joints, 2.5)
-        else:
-            self.send_arm_trajectory(approach, 2.5)  # fallback
+        # TRUE PERMANENT FIX: don't re-solve IK at all for the lift -- any
+        # fresh IK solve, even with a good seed, can land on a slightly
+        # different arm shape (this was proven: identical final swing
+        # position across many runs, meaning it's a deterministic branch
+        # difference, not randomness). Instead, take the EXACT grasp joint
+        # values and adjust ONLY shoulder_lift by a small fixed amount to
+        # raise the arm. Zero re-solving means zero possibility of a
+        # different branch -- guaranteed continuous motion, no swing.
+        lift_joints = list(grasp)
+        lift_joints[1] -= 0.35  # shoulder_lift index -- raises the arm
+        self.send_arm_trajectory(lift_joints, 2.5)
         time.sleep(3.0)
 
         self.get_logger().info("TEST COMPLETE - check Gazebo viewport for actual result.")

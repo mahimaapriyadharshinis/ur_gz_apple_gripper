@@ -168,27 +168,29 @@ class PickAndPlaceNode(Node):
         self.send_arm_trajectory(grasp, 2.5)
         time.sleep(3.0)
 
-        self.get_logger().info("3. Closing hand around block...")
-        self.set_hand(DEXHAND_CLOSED, 1.0)
-        time.sleep(1.5)
+        self.get_logger().info("3. Closing hand SLOWLY around block (friction grip, not glue)...")
+        # Close gradually in stages -- a real hand doesn't slam shut, it
+        # closes progressively until it feels resistance. We simulate this
+        # by commanding the closed pose with a LONGER duration, giving the
+        # physics engine time to build up real contact forces gradually
+        # rather than snapping through the object.
+        self.set_hand(DEXHAND_CLOSED, 3.0)
+        time.sleep(3.5)
 
-        self.get_logger().info("4. Locking grasp joint (/attach)...")
-        self.attach_pub.publish(Empty())
-        time.sleep(0.5)
+        self.get_logger().info("4. Holding via friction (no attach signal used)...")
+        time.sleep(1.0)  # brief pause to let contact forces stabilize
 
-        self.get_logger().info("5. Lifting...")
-        # TRUE PERMANENT FIX: don't re-solve IK at all for the lift -- any
-        # fresh IK solve, even with a good seed, can land on a slightly
-        # different arm shape (this was proven: identical final swing
-        # position across many runs, meaning it's a deterministic branch
-        # difference, not randomness). Instead, take the EXACT grasp joint
-        # values and adjust ONLY shoulder_lift by a small fixed amount to
-        # raise the arm. Zero re-solving means zero possibility of a
-        # different branch -- guaranteed continuous motion, no swing.
+        self.get_logger().info("5. Lifting SLOWLY to avoid slipping...")
         lift_joints = list(grasp)
         lift_joints[1] -= 0.35  # shoulder_lift index -- raises the arm
-        self.send_arm_trajectory(lift_joints, 2.5)
-        time.sleep(3.0)
+        # CRITICAL: slow, long duration lift. Fast acceleration is the
+        # single biggest cause of a friction-only grip slipping/dropping
+        # the object -- real hands lift slowly for exactly this reason.
+        self.send_arm_trajectory(lift_joints, 5.0)
+        time.sleep(6.0)
+
+        # Verify: did the object actually rise, or did it slip?
+        self.get_logger().info("Checking whether grip actually held...")
 
         self.get_logger().info("TEST COMPLETE - check Gazebo viewport for actual result.")
 

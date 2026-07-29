@@ -124,6 +124,7 @@
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
     </plugin>
+    <!-- DetachableJoint disabled -- switching to real friction-based grasping
     <plugin filename="ignition-gazebo-detachable-joint-system" name="ignition::gazebo::systems::DetachableJoint">
       <parent_link>wrist_3_link</parent_link>
       <child_model>red_block</child_model>
@@ -131,6 +132,7 @@
       <attach_topic>/attach</attach_topic>
       <detach_topic>/detach</detach_topic>
     </plugin>
+    -->
   </gazebo>
 
   <ros2_control name="DexHandSystem" type="system">

@@ -17,8 +17,8 @@ DEXHAND_JOINT_NAMES = [
     'R_Index_Yaw', 'R_Middle_Yaw', 'R_Ring_Yaw', 'R_Pinky_Yaw', 'R_Thumb_Pitch',
 ]
 DEXHAND_OPEN = [0.0] * 21
-DEXHAND_CLOSED = [0.0, 0.0, 0.0, 0.0, 0.9, 0.9, 0.9, 0.9, 0.5, 0.5, 0.5, 0.5,
-                  0.3, 0.0, 0.9, 0.5, 0.0, 0.0, 0.0, 0.0, 0.6]
+DEXHAND_CLOSED = [1.0, 1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.9, 0.6, 0.6, 0.6, 0.6,
+                  0.3, 0.0, 1.1, 0.6, 0.0, 0.0, 0.0, 0.0, 0.9]
 
 URDF_PATH = '/tmp/real_robot_exact.urdf'
 ARM_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',

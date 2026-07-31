@@ -2,8 +2,45 @@
 <sdf version="1.6">
   <world name="sorting_workspace">
 
-    <include><uri>model://sun</uri></include>
-    <include><uri>model://ground_plane</uri></include>
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
 
     <!-- 1. OVERHEAD CAMERA MODEL (CENTERED & RAISED TO VIEW ALL OBJECTS + BINS) -->
     <!-- 1. OVERHEAD CAMERA MODEL (WIDE ANGLE OVERHEAD VIEW) -->
@@ -12,11 +49,11 @@
       <!-- Centered at X=0.0, raised to Z=2.2m -->
       <pose>0.0 0.0 1.3 0 1.5708 0</pose>
       <link name="link">
-        <sensor type="depth" name="gazebo_camera">
+        <sensor type="rgbd_camera" name="gazebo_camera">
           <always_on>true</always_on>
           <update_rate>30.0</update_rate>
+          <topic>camera</topic>
           <camera>
-            <!-- Widen FOV to 1.6 rad (~92 deg) -->
             <horizontal_fov>1.60</horizontal_fov>
             <image>
               <width>640</width>
@@ -28,19 +65,6 @@
               <far>10.0</far>
             </clip>
           </camera>
-
-          <!-- ROS 2 CAMERA PLUGIN WITH ABSOLUTE TOPIC REMAPPING -->
-          <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
-            <ros>
-              <remapping>image_raw:=/camera/image_raw</remapping>
-              <remapping>depth/image_raw:=/camera/depth/image_raw</remapping>
-              <remapping>camera_info:=/camera/camera_info</remapping>
-            </ros>
-            <camera_name>camera</camera_name>
-            <frame_name>camera_link</frame_name>
-            <min_depth>0.1</min_depth>
-            <max_depth>10.0</max_depth>
-          </plugin>
         </sensor>
       </link>
     </model>

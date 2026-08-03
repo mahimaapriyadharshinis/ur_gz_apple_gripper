@@ -20,12 +20,13 @@
     </physics>
 
     <include>
-      <uri>model://sun</uri>
+	<uri>https://fuel.gazebosim.org/1.0/openrobotics/models/Sun</uri>
+    </include>
+    <include>
+  	<uri>https://fuel.gazebosim.org/1.0/openrobotics/models/Ground Plane</uri>
     </include>
 
-    <include>
-      <uri>model://ground_plane</uri>
-    </include>
+    
 
     <include>
       <uri>model://apple_01</uri>

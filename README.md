@@ -1,4 +1,3 @@
-<img width="795" height="566" alt="image" src="https://github.com/user-attachments/assets/9f526342-1ba9-4eb2-bbd3-c2f0ff904b17" /><img width="795" height="566" alt="image" src="https://github.com/user-attachments/assets/b285b497-03be-4d3c-a7b4-95d0e756f9c4" /><img width="795" height="566" alt="image" src="https://github.com/user-attachments/assets/b7a8af23-5abc-4c3b-95e6-e760ce575773" />## Run
 
 ```bash
 pkill -9 -f "ign gazebo" 2>/dev/null

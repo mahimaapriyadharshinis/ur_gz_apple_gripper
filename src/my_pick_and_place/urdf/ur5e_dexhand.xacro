@@ -36,10 +36,11 @@
     </inertial>
   </link>
 
+  <!-- MOVED ROBOT BESIDE APPLES (X=0.8m, Y=-0.8m) AND ROTATED 90 DEGREES (Yaw=1.5708) -->
   <joint name="base_footprint_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="mobile_base_link"/>
-    <origin xyz="0 0 0.0" rpy="0 0 0"/>
+    <origin xyz="0.8 -0.8 0.0" rpy="0 0 1.5708"/>
   </joint>
 
   <!-- Drive Wheels -->
@@ -79,7 +80,7 @@
     <parent link="mobile_base_link"/><child link="caster_back"/><origin xyz="-0.3 0 0.06" rpy="0 0 0"/>
   </joint>
 
-  <!-- Include UR Robot -->
+  <!-- Include UR Robot with Horizontal Arm Pose -->
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
   <xacro:ur_robot
     name="$(arg name)"
@@ -94,7 +95,7 @@
     safety_k_position="$(arg safety_k_position)"
     generate_ros2_control_tag="$(arg generate_ros2_control_tag)"
     sim_ignition="$(arg sim_ignition)"
-    initial_positions="${dict(shoulder_pan_joint=0.0, shoulder_lift_joint=-1.5708, elbow_joint=0.0, wrist_1_joint=-1.5708, wrist_2_joint=0.0, wrist_3_joint=0.0)}"
+    initial_positions="${dict(shoulder_pan_joint=0.0, shoulder_lift_joint=-1.5708, elbow_joint=1.5708, wrist_1_joint=-1.5708, wrist_2_joint=-1.5708, wrist_3_joint=0.0)}"
   >
     <origin xyz="0 0 0.285" rpy="0 0 0"/>
   </xacro:ur_robot>
@@ -124,15 +125,6 @@
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
     </plugin>
-    <!-- DetachableJoint disabled, switching to real friction-based grasping
-    <plugin filename="ignition-gazebo-detachable-joint-system" name="ignition::gazebo::systems::DetachableJoint">
-      <parent_link>wrist_3_link</parent_link>
-      <child_model>red_block</child_model>
-      <child_link>block_link</child_link>
-      <attach_topic>/attach</attach_topic>
-      <detach_topic>/detach</detach_topic>
-    </plugin>
-    -->
   </gazebo>
 
   <ros2_control name="DexHandSystem" type="system">

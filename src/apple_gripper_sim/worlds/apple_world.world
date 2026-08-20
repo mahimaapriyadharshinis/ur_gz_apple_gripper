@@ -1,7 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.7">
   <world name="apple_world">
-
     <physics name="ode_physics" type="ode">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -19,15 +18,23 @@
       </ode>
     </physics>
 
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics">
+    </plugin>
+    <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster">
+    </plugin>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands">
+    </plugin>
+
     <include>
 	<uri>https://fuel.gazebosim.org/1.0/openrobotics/models/Sun</uri>
     </include>
     <include>
   	<uri>https://fuel.gazebosim.org/1.0/openrobotics/models/Ground Plane</uri>
     </include>
-
     
-
     <include>
       <uri>model://apple_01</uri>
       <name>apple_01</name>
@@ -78,6 +85,6 @@
       <name>apple_10</name>
       <pose>2.25 0.00 0.05 0 0 0</pose>
     </include>
-
+    
   </world>
 </sdf>

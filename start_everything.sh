@@ -13,12 +13,19 @@ pkill -9 -f "parameter_bridge" 2>/dev/null || true
 pkill -9 -f "ros2 launch" 2>/dev/null || true
 sleep 2
 
-echo "=== Launching simulation with apple_world (background) ==="
+# gazebo_gui:=false runs `ign gazebo -s` (server only, no GUI process). The Sensors
+# system (physics/gripper_camera/ros2_control) is a separate subsystem from the GUI
+# and works fine on this VM under ogre1 (see apple_world.world) -- the GUI's own 3D
+# view is still ogre2 and crashes (Ogre::UnimplementedException in GL3PlusTextureGpu)
+# when apple meshes load. Skipping the GUI avoids that crash entirely; nothing the
+# grasp scripts do needs it, they only talk to Gazebo over ROS topics/services.
+echo "=== Launching simulation with apple_world, headless (background) ==="
 setsid ros2 launch ur_simulation_gz ur_sim_control.launch.py \
     ur_type:=ur5e \
     description_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro \
     controllers_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/merged_controllers.yaml \
     world_file:=/home/mahimaa/ur_gz_ws/src/apple_gripper_sim/worlds/apple_world.world \
+    gazebo_gui:=false \
     > /tmp/sim_launch.log 2>&1 < /dev/null &
 disown
 

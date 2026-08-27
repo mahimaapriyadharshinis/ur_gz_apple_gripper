@@ -21,7 +21,12 @@
     <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics">
     </plugin>
     <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
-      <render_engine>ogre2</render_engine>
+      <!-- ogre2/GL3Plus crashes on this VM's driver during its own internal scene
+           bootstrap (Ogre::UnimplementedException in GL3PlusTextureGpu::copyTo,
+           inside CreateMaterials() -- happens before any world content loads, so
+           it's not specific to the apple/crate models). Legacy ogre1 uses a
+           different codepath and doesn't hit this. -->
+      <render_engine>ogre</render_engine>
     </plugin>
     <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster">
     </plugin>

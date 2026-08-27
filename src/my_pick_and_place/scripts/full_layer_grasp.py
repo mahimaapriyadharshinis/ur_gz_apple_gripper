@@ -141,27 +141,12 @@ def solve_ik(chain, target_xyz, init=None):
                 g[i] = preset[link.name]
         guesses.append(g)
 
-    # Constrain the full orientation, not just "point down" -- with only a Z-axis
-    # constraint, the rotation around that (now-vertical) axis was completely free,
-    # so the hand could end up facing any horizontal direction, including away from
-    # the target. Pin the hand's local X axis to point radially outward from the
-    # robot's base toward the target, which is the natural "reaching toward it" pose.
-    horiz = np.array([target_xyz[0], target_xyz[1], 0.0])
-    horiz_norm = np.linalg.norm(horiz)
-    x_axis = (horiz / horiz_norm) if horiz_norm > 1e-6 else np.array([1.0, 0.0, 0.0])
-    x_axis = x_axis * HAND_FACING_SIGN
-    z_axis = np.array([0.0, 0.0, -1.0])
-    y_axis = np.cross(z_axis, x_axis)
-    y_axis = y_axis / np.linalg.norm(y_axis)
-    x_axis = np.cross(y_axis, z_axis)
-    target_rotation = np.column_stack([x_axis, y_axis, z_axis])
-
     valid_solutions = []
     best_solution, best_error = None, float('inf')
     for g in guesses:
         solution = chain.inverse_kinematics(
             target_xyz, initial_position=g,
-            target_orientation=target_rotation, orientation_mode='all'
+            target_orientation=[0, 0, -1], orientation_mode='Z'
         )
         achieved = chain.forward_kinematics(solution)[:3, 3]
         error = np.linalg.norm(np.array(target_xyz) - achieved)
@@ -199,7 +184,23 @@ def solve_ik(chain, target_xyz, init=None):
     def total_motion(sol):
         return sum(abs(a) for link, a in zip(chain.links, sol) if link.name in ARM_JOINTS)
 
-    best = min(candidates, key=total_motion)
+    # Only a Z-axis constraint above ("point down") leaves the hand's rotation around
+    # that now-vertical axis free -- it can end up facing any horizontal direction,
+    # including away from the target (a hard full-orientation constraint was tried and
+    # made many positions unreachable, so this is a soft preference instead). Among
+    # already position-valid candidates, prefer whichever one's hand ends up facing
+    # closest to radially outward from the base (the natural "reaching toward it" pose).
+    # HAND_FACING_SIGN flips which way "toward" means if this guess is backwards.
+    horiz = np.array([target_xyz[0], target_xyz[1], 0.0])
+    horiz_norm = np.linalg.norm(horiz)
+    desired_facing = (horiz / horiz_norm) if horiz_norm > 1e-6 else np.array([1.0, 0.0, 0.0])
+    desired_facing = desired_facing * HAND_FACING_SIGN
+
+    def facing_alignment(sol):
+        hand_x_axis = chain.forward_kinematics(sol)[:3, 0]
+        return float(np.dot(hand_x_axis, desired_facing))
+
+    best = max(candidates, key=lambda sol: (facing_alignment(sol), -total_motion(sol)))
     joints = {link.name: float(a) for link, a in zip(chain.links, best) if link.name in ARM_JOINTS}
     return [joints[j] for j in ARM_JOINTS], best
 

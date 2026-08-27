@@ -52,5 +52,13 @@
         </material>
       </visual>
     </link>
-  </model>
+      <plugin
+      filename="libignition-gazebo-pose-publisher-system.so"
+      name="ignition::gazebo::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_nested_model_pose>true</publish_nested_model_pose>
+      <use_pose_vector_msg>false</use_pose_vector_msg>
+      <update_frequency>20</update_frequency>
+    </plugin>
+</model>
 </sdf>

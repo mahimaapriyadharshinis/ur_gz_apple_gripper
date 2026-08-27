@@ -40,7 +40,7 @@
   <joint name="base_footprint_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="mobile_base_link"/>
-    <origin xyz="0.8 -0.8 0.0" rpy="0 0 1.5708"/>
+    <origin xyz="1.375 -0.55 0.0" rpy="0 0 1.5708"/>
   </joint>
 
   <!-- Drive Wheels -->

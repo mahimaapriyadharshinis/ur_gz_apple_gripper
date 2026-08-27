@@ -1,0 +1,437 @@
+[
+  {
+    "timestamp": 1787332994.907097,
+    "object": "apple_03",
+    "vlm_analysis": {
+      "object_name": "apple_03",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "pose_after": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787333447.230918,
+    "object": "apple_03",
+    "vlm_analysis": {
+      "object_name": "apple_03",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "no camera data available"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "pose_after": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787333766.284999,
+    "object": "apple_03",
+    "vlm_analysis": {
+      "object_name": "apple_03",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "no camera data available"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "pose_after": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787579121.058512,
+    "object": "apple_02",
+    "vlm_analysis": {
+      "object_name": "apple_02",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.25,
+      0.0,
+      0.03679913335851996
+    ],
+    "pose_after": [
+      0.25,
+      0.0,
+      0.03679913335851996
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787580216.6833599,
+    "object": "apple_02",
+    "vlm_analysis": {
+      "object_name": "apple_02",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.25,
+      0.0,
+      0.03679913335851996
+    ],
+    "pose_after": [
+      0.25,
+      0.0,
+      0.03679913335851996
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787580806.60504,
+    "object": "apple_02",
+    "vlm_analysis": {
+      "object_name": "apple_02",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.25,
+      0.0,
+      0.03679913335851996
+    ],
+    "pose_after": [
+      0.25,
+      0.0,
+      0.03679913335851996
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787581218.371541,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "apple_04",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.8000001836548581,
+      0.049997061435580054,
+      0.03959916390475388
+    ],
+    "pose_after": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787581320.2785914,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "apple_04",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.8000001836548581,
+      0.049997061435580054,
+      0.03959916390475388
+    ],
+    "pose_after": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787581628.3778238,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "apple_04",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.8000001836548581,
+      0.049997061435580054,
+      0.03959916390475388
+    ],
+    "pose_after": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787581923.7334888,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "apple_04",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.8000001836548581,
+      0.049997061435580054,
+      0.03959916390475388
+    ],
+    "pose_after": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787582313.3279405,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "apple_04",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.8000001836548581,
+      0.049997061435580054,
+      0.03959916390475388
+    ],
+    "pose_after": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787583072.8583553,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "apple_04",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: 404 Client Error: Not Found for url: http://localhost:11434/api/generate"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before": [
+      0.8000001836548581,
+      0.049997061435580054,
+      0.03959916390475388
+    ],
+    "pose_after": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787585508.1803217,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "apple_04",
+      "fragility_score": 5,
+      "estimated_material": "unknown",
+      "recommended_grip_force": "medium",
+      "confidence": 0.0,
+      "notes": "VLM unavailable: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)"
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before_world": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "pose_after_world": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787585685.953009,
+    "object": "apple_04",
+    "vlm_analysis": {
+      "object_name": "car bumper",
+      "fragility_score": 5,
+      "estimated_material": "plastic",
+      "recommended_grip_force": "medium",
+      "confidence": 0.8,
+      "notes": "The bumper appears to be made of a durable plastic material."
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before_world": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "pose_after_world": [
+      0.75,
+      0.0,
+      0.03959916390475388
+    ],
+    "success": false
+  },
+  {
+    "timestamp": 1787829237.332798,
+    "object": "apple_03",
+    "vlm_analysis": {
+      "object_name": "piece of paper",
+      "fragility_score": 5,
+      "estimated_material": "paper",
+      "recommended_grip_force": "medium",
+      "confidence": 0.8,
+      "notes": "The object appears to be a piece of paper with a smooth surface."
+    },
+    "grip_plan": {
+      "max_pitch": 1.15,
+      "target_effort_est": 1.6554374999999997
+    },
+    "grip_contacted_fingers_ok": false,
+    "safety_ok": true,
+    "pose_before_world": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "pose_after_world": [
+      0.5,
+      0.0,
+      0.04319989494780456
+    ],
+    "success": false
+  }
+]

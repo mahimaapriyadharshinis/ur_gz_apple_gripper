@@ -493,10 +493,16 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"[Coordinate fix] World pos ({pose.position.x:.3f}, {pose.position.y:.3f}) "
             f"-> Robot-frame pos ({x:.3f}, {y:.3f})")
 
-        z_top = z_center + 0.02
+        # Apple collision sphere radius is 0.04m (see apple_gripper_sim model.sdf files).
+        # The old "z_top = z_center + 0.02" undershot the real top by 2cm and put the
+        # grasp target at the apple's CENTER -- a genuinely hard reach (wrist buried at
+        # ground level) that's also not how grasping actually works: the wrist hovers
+        # just above the object while fingers curl down/around it, not at its center.
+        apple_radius = 0.04
+        z_top = z_center + apple_radius
 
         approach_target = [x, y, z_top + 0.15]
-        grasp_target = [x, y, z_top - 0.02]
+        grasp_target = [x, y, z_top + 0.01]
 
         approach_result = solve_ik(self.chain, approach_target)
         if approach_result is None:

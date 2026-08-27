@@ -39,12 +39,15 @@ STATION_YAW = DELIVERY_ROBOT_YAW
 CANDIDATE_STATION_X = [round(-0.2 + 0.2 * i, 2) for i in range(15)]  # -0.2 .. 2.6
 
 
+APPLE_RADIUS = 0.04  # must match full_layer_grasp.py's apple_radius
+
+
 def apple_reachable(chain, station_x, apple_world_xy):
     x_local, y_local = world_to_local(apple_world_xy[0], apple_world_xy[1],
                                        station_x, STATION_Y, STATION_YAW)
-    z_top = APPLE_WORLD_Z + 0.02
+    z_top = APPLE_WORLD_Z + APPLE_RADIUS
     approach = solve_ik(chain, [x_local, y_local, z_top + 0.15])
-    grasp = solve_ik(chain, [x_local, y_local, z_top - 0.02])
+    grasp = solve_ik(chain, [x_local, y_local, z_top + 0.01])
     return approach is not None and grasp is not None
 
 

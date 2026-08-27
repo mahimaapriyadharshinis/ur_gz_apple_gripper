@@ -123,6 +123,14 @@ HAND_FACING_SIGN = 1
 
 
 def solve_ik(chain, target_xyz, init=None):
+    # Computed early so guesses can be seeded AT the target's actual direction --
+    # confirmed by testing that fixed-angle presets alone (0.3/-0.3 rad) let the solver
+    # converge to a ~132-138 degree "mirror" configuration regardless of where the
+    # target actually was (reproduced with expected_pan both at 0 and 12.8 degrees,
+    # landing on nearly the same wrong shoulder angle both times) -- the fixed presets
+    # just weren't close enough to the correct basin for this arm/orientation combo.
+    expected_pan = np.arctan2(target_xyz[1], target_xyz[0])
+
     guesses = []
     if init is not None:
         guesses.append(init)
@@ -138,6 +146,14 @@ def solve_ik(chain, target_xyz, init=None):
         # the ground where the straight-down orientation constraint is harder to satisfy.
         {'shoulder_lift_joint': -1.8, 'elbow_joint': 2.0, 'wrist_1_joint': -1.77, 'wrist_2_joint': -1.5708},
         {'shoulder_lift_joint': -0.4, 'elbow_joint': 0.8, 'wrist_1_joint': -1.98, 'wrist_2_joint': -1.5708},
+        # Same rest pose used by reset_everything() -- a known-sane, non-extreme
+        # posture -- but with shoulder_pan rotated to actually face the target.
+        {'shoulder_pan_joint': expected_pan, 'shoulder_lift_joint': -1.2, 'elbow_joint': 1.5,
+         'wrist_1_joint': -1.9, 'wrist_2_joint': 0.0},
+        {'shoulder_pan_joint': expected_pan, 'shoulder_lift_joint': -0.9, 'elbow_joint': 1.3,
+         'wrist_1_joint': -1.97, 'wrist_2_joint': -1.5708},
+        {'shoulder_pan_joint': expected_pan, 'shoulder_lift_joint': -0.5, 'elbow_joint': 0.9,
+         'wrist_1_joint': -2.0, 'wrist_2_joint': -1.5708},
         {},
     ]
     for preset in presets:
@@ -171,8 +187,6 @@ def solve_ik(chain, target_xyz, init=None):
                   f"{len(guesses)} guesses was {best_error:.4f}m "
                   f"(tolerance={IK_ERROR_TOLERANCE}m, fallback ceiling={IK_FALLBACK_ERROR_CEILING}m)")
             return None
-
-    expected_pan = np.arctan2(target_xyz[1], target_xyz[0])
 
     def pan_of(sol):
         for link, a in zip(chain.links, sol):

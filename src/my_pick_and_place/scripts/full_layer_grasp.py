@@ -178,18 +178,13 @@ def solve_ik(chain, target_xyz, init=None):
         d = (a - b + np.pi) % (2 * np.pi) - np.pi
         return abs(d)
 
-    facing_correct = [s for s in valid_solutions if angle_diff(pan_of(s), expected_pan) < 1.05]
-    candidates = facing_correct if facing_correct else valid_solutions
-
     def total_motion(sol):
         return sum(abs(a) for link, a in zip(chain.links, sol) if link.name in ARM_JOINTS)
 
     # Only a Z-axis constraint above ("point down") leaves the hand's rotation around
     # that now-vertical axis free -- it can end up facing any horizontal direction,
     # including away from the target (a hard full-orientation constraint was tried and
-    # made many positions unreachable, so this is a soft preference instead). Among
-    # already position-valid candidates, prefer whichever one's hand ends up facing
-    # closest to radially outward from the base (the natural "reaching toward it" pose).
+    # made many positions unreachable, so this is a soft preference instead).
     # HAND_FACING_SIGN flips which way "toward" means if this guess is backwards.
     horiz = np.array([target_xyz[0], target_xyz[1], 0.0])
     horiz_norm = np.linalg.norm(horiz)
@@ -200,7 +195,14 @@ def solve_ik(chain, target_xyz, init=None):
         hand_x_axis = chain.forward_kinematics(sol)[:3, 0]
         return float(np.dot(hand_x_axis, desired_facing))
 
-    best = max(candidates, key=lambda sol: (facing_alignment(sol), -total_motion(sol)))
+    # PRIMARILY avoid "mirror" arm configurations (same wrist position, shoulder rotated
+    # to roughly the opposite side, elbow flipped) -- a real bug that slipped through the
+    # previous all-or-nothing 60-degree cutoff (it fell back to accepting ANY solution,
+    # including mirrored ones, when nothing passed). Sorting by pan mismatch first, with
+    # facing/motion only as tiebreaks among comparably-good arm configurations, prevents
+    # that regardless of whether anything happens to clear a fixed threshold.
+    best = min(valid_solutions, key=lambda sol: (
+        angle_diff(pan_of(sol), expected_pan), -facing_alignment(sol), total_motion(sol)))
     joints = {link.name: float(a) for link, a in zip(chain.links, best) if link.name in ARM_JOINTS}
     return [joints[j] for j in ARM_JOINTS], best
 

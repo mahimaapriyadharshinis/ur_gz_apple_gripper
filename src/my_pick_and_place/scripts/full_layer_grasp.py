@@ -104,6 +104,13 @@ def build_chain():
     return chain
 
 
+# 1cm was too tight -- borderline-converging targets could pass or fail depending on
+# tiny floating-point differences between runs/environments. 2cm has enough margin for
+# this task (finger closing envelope is far larger) while still being solidly accurate.
+IK_ERROR_TOLERANCE = 0.02
+IK_FALLBACK_ERROR_CEILING = 0.04
+
+
 def solve_ik(chain, target_xyz, init=None):
     guesses = []
     if init is not None:
@@ -114,6 +121,8 @@ def solve_ik(chain, target_xyz, init=None):
         {'shoulder_lift_joint': -0.8, 'elbow_joint': 1.6, 'wrist_1_joint': -2.3, 'wrist_2_joint': -1.5708},
         {'shoulder_lift_joint': -2.0, 'elbow_joint': 1.5, 'wrist_1_joint': 0.0, 'wrist_2_joint': -1.5708},
         {'shoulder_pan_joint': 0.3, 'shoulder_lift_joint': -1.2, 'elbow_joint': 1.8, 'wrist_2_joint': -1.5708},
+        {'shoulder_pan_joint': -0.3, 'shoulder_lift_joint': -1.4, 'elbow_joint': 1.4, 'wrist_1_joint': -1.5, 'wrist_2_joint': -1.5708},
+        {'shoulder_lift_joint': -0.6, 'elbow_joint': 1.0, 'wrist_1_joint': -1.9, 'wrist_2_joint': -1.5708},
         {},
     ]
     for preset in presets:
@@ -124,6 +133,7 @@ def solve_ik(chain, target_xyz, init=None):
         guesses.append(g)
 
     valid_solutions = []
+    best_solution, best_error = None, float('inf')
     for g in guesses:
         solution = chain.inverse_kinematics(
             target_xyz, initial_position=g,
@@ -131,11 +141,18 @@ def solve_ik(chain, target_xyz, init=None):
         )
         achieved = chain.forward_kinematics(solution)[:3, 3]
         error = np.linalg.norm(np.array(target_xyz) - achieved)
-        if error < 0.01:
+        if error < best_error:
+            best_error, best_solution = error, solution
+        if error < IK_ERROR_TOLERANCE:
             valid_solutions.append(solution)
 
     if not valid_solutions:
-        return None
+        # Nothing hit the normal tolerance -- fall back to the closest solution found,
+        # as long as it's not wildly off, rather than failing outright on a near-miss.
+        if best_solution is not None and best_error < IK_FALLBACK_ERROR_CEILING:
+            valid_solutions = [best_solution]
+        else:
+            return None
 
     expected_pan = np.arctan2(target_xyz[1], target_xyz[0])
 

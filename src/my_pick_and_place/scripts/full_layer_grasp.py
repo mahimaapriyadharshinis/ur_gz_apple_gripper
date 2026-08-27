@@ -109,6 +109,11 @@ def build_chain():
 # this task (finger closing envelope is far larger) while still being solidly accurate.
 IK_ERROR_TOLERANCE = 0.025
 IK_FALLBACK_ERROR_CEILING = 0.05
+# Flip to -1 if the hand ends up facing AWAY from the target instead of toward it --
+# nothing previously constrained which horizontal direction the hand faces while
+# pointing down, so this is an untested best guess (radially outward from the base)
+# until confirmed against the real sim.
+HAND_FACING_SIGN = 1
 
 
 def solve_ik(chain, target_xyz, init=None):
@@ -136,12 +141,27 @@ def solve_ik(chain, target_xyz, init=None):
                 g[i] = preset[link.name]
         guesses.append(g)
 
+    # Constrain the full orientation, not just "point down" -- with only a Z-axis
+    # constraint, the rotation around that (now-vertical) axis was completely free,
+    # so the hand could end up facing any horizontal direction, including away from
+    # the target. Pin the hand's local X axis to point radially outward from the
+    # robot's base toward the target, which is the natural "reaching toward it" pose.
+    horiz = np.array([target_xyz[0], target_xyz[1], 0.0])
+    horiz_norm = np.linalg.norm(horiz)
+    x_axis = (horiz / horiz_norm) if horiz_norm > 1e-6 else np.array([1.0, 0.0, 0.0])
+    x_axis = x_axis * HAND_FACING_SIGN
+    z_axis = np.array([0.0, 0.0, -1.0])
+    y_axis = np.cross(z_axis, x_axis)
+    y_axis = y_axis / np.linalg.norm(y_axis)
+    x_axis = np.cross(y_axis, z_axis)
+    target_rotation = np.column_stack([x_axis, y_axis, z_axis])
+
     valid_solutions = []
     best_solution, best_error = None, float('inf')
     for g in guesses:
         solution = chain.inverse_kinematics(
             target_xyz, initial_position=g,
-            target_orientation=[0, 0, -1], orientation_mode='Z'
+            target_orientation=target_rotation, orientation_mode='all'
         )
         achieved = chain.forward_kinematics(solution)[:3, 3]
         error = np.linalg.norm(np.array(target_xyz) - achieved)

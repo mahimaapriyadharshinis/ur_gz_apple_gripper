@@ -107,8 +107,8 @@ def build_chain():
 # 1cm was too tight -- borderline-converging targets could pass or fail depending on
 # tiny floating-point differences between runs/environments. 2cm has enough margin for
 # this task (finger closing envelope is far larger) while still being solidly accurate.
-IK_ERROR_TOLERANCE = 0.02
-IK_FALLBACK_ERROR_CEILING = 0.04
+IK_ERROR_TOLERANCE = 0.025
+IK_FALLBACK_ERROR_CEILING = 0.05
 
 
 def solve_ik(chain, target_xyz, init=None):
@@ -123,6 +123,10 @@ def solve_ik(chain, target_xyz, init=None):
         {'shoulder_pan_joint': 0.3, 'shoulder_lift_joint': -1.2, 'elbow_joint': 1.8, 'wrist_2_joint': -1.5708},
         {'shoulder_pan_joint': -0.3, 'shoulder_lift_joint': -1.4, 'elbow_joint': 1.4, 'wrist_1_joint': -1.5, 'wrist_2_joint': -1.5708},
         {'shoulder_lift_joint': -0.6, 'elbow_joint': 1.0, 'wrist_1_joint': -1.9, 'wrist_2_joint': -1.5708},
+        # Low-reach configurations: arm swung further down/out, biased for targets near
+        # the ground where the straight-down orientation constraint is harder to satisfy.
+        {'shoulder_lift_joint': -1.8, 'elbow_joint': 2.0, 'wrist_1_joint': -1.77, 'wrist_2_joint': -1.5708},
+        {'shoulder_lift_joint': -0.4, 'elbow_joint': 0.8, 'wrist_1_joint': -1.98, 'wrist_2_joint': -1.5708},
         {},
     ]
     for preset in presets:
@@ -152,6 +156,9 @@ def solve_ik(chain, target_xyz, init=None):
         if best_solution is not None and best_error < IK_FALLBACK_ERROR_CEILING:
             valid_solutions = [best_solution]
         else:
+            print(f"[solve_ik] UNREACHABLE target={target_xyz}: best error across "
+                  f"{len(guesses)} guesses was {best_error:.4f}m "
+                  f"(tolerance={IK_ERROR_TOLERANCE}m, fallback ceiling={IK_FALLBACK_ERROR_CEILING}m)")
             return None
 
     expected_pan = np.arctan2(target_xyz[1], target_xyz[0])

@@ -326,6 +326,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         contacted = {g: False for g in FINGER_GROUPS}
         current = {g: 0.0 for g in FINGER_GROUPS}
+        max_effort_seen = {g: 0.0 for g in FINGER_GROUPS}
 
         for step in range(MAX_CLOSE_STEPS):
             if all(contacted.values()):
@@ -340,10 +341,17 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
             for g in FINGER_GROUPS:
                 name = f"{g}_Pitch"
+                pos = self.latest_joint_state.get(name, (0, 0))[0]
                 effort = abs(self.latest_joint_state.get(name, (0, 0))[1])
+                max_effort_seen[g] = max(max_effort_seen[g], effort)
                 if effort > contact_threshold and not contacted[g]:
                     contacted[g] = True
                     self.get_logger().info(f"  [Layer 3] {g}: contact (effort={effort:.3f}Nm)")
+                elif step == MAX_CLOSE_STEPS - 1 and not contacted[g]:
+                    self.get_logger().info(
+                        f"  [Layer 3] {g}: NO contact. commanded={current[g]:.3f}rad "
+                        f"actual_pos={pos:.3f}rad peak_effort={max_effort_seen[g]:.4f}Nm "
+                        f"(threshold={contact_threshold:.3f}Nm)")
 
         n_contacted = sum(contacted.values())
         return n_contacted >= 3
@@ -494,6 +502,16 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         self.get_logger().info("Lowering to grasp position...")
         self.send_arm_trajectory(grasp, 2.5)
         time.sleep(3.0)
+        rclpy.spin_once(self, timeout_sec=0.5)
+        if self.target_pose is not None:
+            dx = self.target_pose.position.x - pose.position.x
+            dy = self.target_pose.position.y - pose.position.y
+            dz = self.target_pose.position.z - pose.position.z
+            drift = (dx ** 2 + dy ** 2 + dz ** 2) ** 0.5
+            self.get_logger().info(
+                f"[Pre-close check] Apple pose after lowering: "
+                f"({self.target_pose.position.x:.3f}, {self.target_pose.position.y:.3f}, "
+                f"{self.target_pose.position.z:.3f}), drift from original={drift:.3f}m")
 
         vlm_result = self.layer1_vlm_analysis()
         plan = self.layer2_imagination(vlm_result)

@@ -3,7 +3,7 @@
   <model name="crate">
     <!-- Small on purpose: outer footprint 0.22x0.22 (half-extent 0.11m) so it clears
          the mobile base's rotated 0.6x0.8m footprint from the delivery station with
-         margin. See CRATE_LOCAL_XY in full_layer_grasp.py -- do not enlarge this
+         margin. See CRATE_LOCAL_XY in full_layer_grasp.py; do not enlarge this
          without re-checking clearance against the mobile base pose. -->
     <static>true</static>
     <pose>0 0 0 0 0 0</pose>

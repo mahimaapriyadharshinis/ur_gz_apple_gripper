@@ -41,6 +41,12 @@ ros2 run ros_gz_bridge parameter_bridge \
     > /tmp/camera_bridge.log 2>&1 &
 disown
 
+echo "=== Starting overhead camera bridge (background) ==="
+ros2 run ros_gz_bridge parameter_bridge \
+    /overhead_camera@sensor_msgs/msg/Image[ignition.msgs.Image \
+    > /tmp/overhead_camera_bridge.log 2>&1 &
+disown
+
 echo "=== Starting apple pose bridges (background) ==="
 for i in 01 02 03 04 05 06 07 08 09 10; do
     ros2 run ros_gz_bridge parameter_bridge \
@@ -54,13 +60,17 @@ echo ""
 echo "=== SETUP COMPLETE. Verifying... ==="
 ros2 control list_controllers
 echo ""
-ros2 topic list | grep -E "model/apple|gripper_camera"
+ros2 topic list | grep -E "model/apple|gripper_camera|overhead_camera"
 echo ""
-echo "If dexhand_controller is ACTIVE and all 10 apple pose topics + gripper_camera are"
-echo "listed above, everything is ready."
+echo "If dexhand_controller is ACTIVE and all 10 apple pose topics + gripper_camera +"
+echo "overhead_camera are listed above, everything is ready."
 echo ""
 echo "Single apple (also runs the new place-in-crate step):"
 echo "  python3 ~/ur_gz_ws/src/my_pick_and_place/scripts/full_layer_grasp.py apple_06"
+echo ""
+echo "Overhead apple detector (color-based, projects pixel positions to world"
+echo "coordinates -- run with --calibrate to compare against ground truth):"
+echo "  python3 ~/ur_gz_ws/src/my_pick_and_place/scripts/detect_apples.py --calibrate"
 echo ""
 echo "For the VLM layer (Layer 1), in a separate terminal:"
 echo "  cd ~/vlm_scripts && source /opt/ros/humble/setup.bash && python3 vlm_fragility_node.py"

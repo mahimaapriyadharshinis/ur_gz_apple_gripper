@@ -537,6 +537,14 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             return {"target": target_name, "success": False, "reason": "unreachable_grasp"}
         grasp, grasp_full_sol = grasp_result
 
+        expected_pan = np.degrees(np.arctan2(grasp_target[1], grasp_target[0]))
+        actual_pan = np.degrees(grasp[0])
+        self.get_logger().info(
+            f"[Arm-config check] grasp joints (deg)="
+            f"{[f'{np.degrees(a):.1f}' for a in grasp]} "
+            f"expected_shoulder_pan={expected_pan:.1f} actual_shoulder_pan={actual_pan:.1f} "
+            f"(large mismatch here means a 'mirror' arm configuration, not a hand-facing issue)")
+
         achieved_robot_frame = self.chain.forward_kinematics(grasp_full_sol)[:3, 3]
         world_check_x, world_check_y = local_to_world(
             achieved_robot_frame[0], achieved_robot_frame[1],

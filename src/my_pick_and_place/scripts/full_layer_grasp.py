@@ -47,7 +47,13 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
-DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.375, -0.55
+# ROBOT_X was 1.375 (apple_06 at world x=1.25), giving a 0.125m lateral offset that
+# consistently forced the IK solver into a mirrored arm configuration for EVERY one
+# of 10 starting guesses (confirmed reproducible across separate runs, not solver
+# randomness) -- a genuine reach limitation at that exact offset, not fixable by
+# tuning presets. Setting ROBOT_X to apple_06's own world x eliminates the lateral
+# offset entirely (dead-ahead reach, the easiest possible geometry for this arm).
+DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.25, -0.55
 DELIVERY_ROBOT_YAW = 1.5708
 # Place target in the delivery station's local (base_footprint-relative) frame --
 # same frame/convention as apple grasp targets, deliberately on the opposite side

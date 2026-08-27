@@ -24,10 +24,7 @@ import sys
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "qwen2.5vl:3b"
 URDF_PATH = "/tmp/real_robot_exact.urdf"
-EXPERIENCE_LOG = "/home/tt501/ur_gz_ws/experience_log.json"
-
-ROBOT_X, ROBOT_Y = 1.375, -0.55
-ROBOT_YAW = 1.5708
+EXPERIENCE_LOG = "/home/mahimaa/ur_gz_ws/experience_log.json"
 
 ARM_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
               'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
@@ -46,6 +43,43 @@ EFFORT_DANGER_THRESHOLD = 0.60
 MAX_CLOSE_STEPS = 30
 CLOSE_STEP_SIZE = 0.05
 STEP_DURATION = 0.25
+# *_Pitch upper limit is 1.309 rad; *_Flexor/*_DIP (commanded at 0.8x this value) are
+# limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
+MAX_PITCH_CEILING = 1.25
+
+DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.375, -0.55
+DELIVERY_ROBOT_YAW = 1.5708
+# Place target in the delivery station's local (base_footprint-relative) frame --
+# same frame/convention as apple grasp targets, deliberately on the opposite side
+# of the robot from the apple row (negative x_local) so it can't overlap an apple.
+# x_local magnitude (0.6) chosen so the crate's world position clears the mobile
+# base's own rotated footprint (0.6x0.8m) with margin -- see crate model comments.
+# UNVERIFIED against the real solver/sim -- test this before running pick_all_apples.py.
+CRATE_LOCAL_XY = (-0.6, 0.0)
+CRATE_LOCAL_Z = 0.08
+
+
+def local_to_world(x_local, y_local, robot_x, robot_y, robot_yaw):
+    cos_yaw = np.cos(robot_yaw)
+    sin_yaw = np.sin(robot_yaw)
+    return (x_local * cos_yaw - y_local * sin_yaw + robot_x,
+            x_local * sin_yaw + y_local * cos_yaw + robot_y)
+
+
+def world_to_local(world_x, world_y, robot_x, robot_y, robot_yaw):
+    """Inverse of local_to_world: express a world (x, y) in the robot-frame
+    convention solve_ik expects, undoing the station's teleported position/yaw."""
+    dx = world_x - robot_x
+    dy = world_y - robot_y
+    cos_yaw = np.cos(-robot_yaw)
+    sin_yaw = np.sin(-robot_yaw)
+    return (dx * cos_yaw - dy * sin_yaw, dx * sin_yaw + dy * cos_yaw)
+
+
+# World-frame position the crate must be spawned at in apple_world.world for the
+# place target above to actually land inside it. See apple_gripper_sim/models/crate.
+CRATE_WORLD_XY = local_to_world(CRATE_LOCAL_XY[0], CRATE_LOCAL_XY[1],
+                                 DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW)
 
 
 def build_chain():
@@ -127,14 +161,16 @@ def solve_ik(chain, target_xyz, init=None):
 
 
 class FullLayerGraspNode(Node):
-    def __init__(self, target_name):
+    def __init__(self, robot_x=DELIVERY_ROBOT_X, robot_y=DELIVERY_ROBOT_Y, robot_yaw=DELIVERY_ROBOT_YAW):
         super().__init__('full_layer_grasp_node')
-        self.target_name = target_name
+        self.robot_x = robot_x
+        self.robot_y = robot_y
+        self.robot_yaw = robot_yaw
+        self.target_name = None
         self.chain = build_chain()
         self.bridge = CvBridge()
 
-        self.pose_sub = self.create_subscription(
-            Pose, f'/model/{target_name}/pose', self._pose_cb, 10)
+        self.pose_sub = None
         self.joint_sub = self.create_subscription(
             JointState, '/joint_states', self._joint_cb, 10)
         self.camera_sub = self.create_subscription(
@@ -148,6 +184,17 @@ class FullLayerGraspNode(Node):
         self.target_pose = None
         self.latest_joint_state = {}
         self.latest_frame = None
+
+    def set_target(self, target_name):
+        if self.pose_sub is not None:
+            self.destroy_subscription(self.pose_sub)
+        self.target_name = target_name
+        self.target_pose = None
+        self.pose_sub = self.create_subscription(
+            Pose, f'/model/{target_name}/pose', self._pose_cb, 10)
+
+    def world_to_local(self, world_x, world_y):
+        return world_to_local(world_x, world_y, self.robot_x, self.robot_y, self.robot_yaw)
 
     def _pose_cb(self, msg):
         self.target_pose = msg
@@ -168,19 +215,25 @@ class FullLayerGraspNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         return check_fn()
 
-    def reset_everything(self):
-        self.get_logger().info("=== RESET: base position ===")
-        reset_result = subprocess.run(
+    def teleport(self, x, y, yaw):
+        qz = float(np.sin(yaw / 2.0))
+        qw = float(np.cos(yaw / 2.0))
+        result = subprocess.run(
             'ign service -s /world/apple_world/set_pose '
             '--reqtype ignition.msgs.Pose --reptype ignition.msgs.Boolean '
             '--timeout 2000 '
-            "--req 'name: \"ur\" position: {x: 1.375 y: -0.55 z: 0.0} "
-            "orientation: {x: 0 y: 0 z: 0.7071 w: 0.7071}'",
+            f"--req 'name: \"ur\" position: {{x: {x} y: {y} z: 0.0}} "
+            f"orientation: {{x: 0 y: 0 z: {qz} w: {qw}}}'",
             shell=True, capture_output=True, text=True
         )
         self.get_logger().info(
-            f"Base reset: stdout={reset_result.stdout.strip()!r} stderr={reset_result.stderr.strip()!r}")
+            f"Base teleport to ({x:.3f}, {y:.3f}, yaw={yaw:.3f}): "
+            f"stdout={result.stdout.strip()!r} stderr={result.stderr.strip()!r}")
         time.sleep(1.5)
+
+    def reset_everything(self):
+        self.get_logger().info("=== RESET: base position ===")
+        self.teleport(self.robot_x, self.robot_y, self.robot_yaw)
 
         self.get_logger().info("=== RESET: arm to natural rest pose ===")
         home = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -236,7 +289,10 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         min_force_n = (object_mass * g) / (2 * mu)
         safety_margin = 1.0 + (10 - fragility) / 10.0
         target_effort = min_force_n * safety_margin
-        max_pitch = 1.4 - (fragility / 10.0) * 0.5
+        # *_Pitch joints are hard-limited to 1.309 rad and *_Flexor/*_DIP to 1.047 rad
+        # (see dexhandv2_right.urdf). command_fingers() sends secondary joints at 0.8x
+        # this value, so the ceiling must leave both limits with margin.
+        max_pitch = MAX_PITCH_CEILING - (fragility / 10.0) * 0.5
         self.get_logger().info(
             f"[Layer 2] Physics plan: min_force={min_force_n:.2f}N, "
             f"target_effort_est={target_effort:.2f}, max_pitch={max_pitch:.2f}")
@@ -309,11 +365,58 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 name = f"{g}_Pitch"
                 effort = abs(self.latest_joint_state.get(name, (0, 0))[1])
                 if effort > EFFORT_DANGER_THRESHOLD:
-                    self.get_logger().warn(f"[Layer 6] DANGER: {g} effort={effort:.3f}Nm!")
+                    self.get_logger().warn(
+                        f"[Layer 6] DANGER: {g} effort={effort:.3f}Nm -- opening hand and aborting hold.")
                     aborted = True
-        if not aborted:
+                    break
+            if aborted:
+                break
+        if aborted:
+            self.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 0.5)
+            time.sleep(0.5)
+        else:
             self.get_logger().info("[Layer 6] No safety violations detected.")
         return not aborted
+
+    def layer_place(self):
+        """Carry the held apple to the crate at the delivery station and release it."""
+        self.get_logger().info("[Place] Teleporting to delivery station...")
+        prev_x, prev_y, prev_yaw = self.robot_x, self.robot_y, self.robot_yaw
+        self.teleport(DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW)
+        self.robot_x, self.robot_y, self.robot_yaw = DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW
+
+        x_local, y_local = CRATE_LOCAL_XY
+        approach_result = solve_ik(self.chain, [x_local, y_local, CRATE_LOCAL_Z + 0.15])
+        target_result = solve_ik(self.chain, [x_local, y_local, CRATE_LOCAL_Z])
+        if approach_result is None or target_result is None:
+            self.get_logger().error(
+                "[Place] Crate position unreachable -- apple still held, will drop on next reset.")
+            self.robot_x, self.robot_y, self.robot_yaw = prev_x, prev_y, prev_yaw
+            return False
+
+        approach_joints, _ = approach_result
+        place_joints, _ = target_result
+
+        self.get_logger().info("[Place] Moving above crate...")
+        self.send_arm_trajectory(approach_joints, 3.5)
+        time.sleep(4.0)
+
+        self.get_logger().info("[Place] Lowering into crate...")
+        self.send_arm_trajectory(place_joints, 2.5)
+        time.sleep(3.0)
+
+        self.get_logger().info("[Place] Releasing...")
+        self.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.0)
+        time.sleep(1.5)
+
+        self.get_logger().info("[Place] Retreating...")
+        retreat_joints = list(place_joints)
+        retreat_joints[1] -= 0.3
+        self.send_arm_trajectory(retreat_joints, 3.0)
+        time.sleep(3.5)
+
+        self.robot_x, self.robot_y, self.robot_yaw = prev_x, prev_y, prev_yaw
+        return True
 
     def layer7_log_experience(self, record):
         history = []
@@ -338,22 +441,20 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         msg.points = [point]
         self.arm_pub.publish(msg)
 
-    def run(self):
+    def run_for_target(self, target_name):
+        """Run the full pick-and-place sequence for one apple at this node's
+        currently-configured station (self.robot_x/y/yaw). Returns a result dict."""
+        self.set_target(target_name)
         self.reset_everything()
 
         pose = None
         if self.wait_for(lambda: self.target_pose is not None, timeout=5.0):
             pose = self.target_pose
         if pose is None:
-            self.get_logger().error(f"No live pose for {self.target_name} -- aborting.")
-            return
+            self.get_logger().error(f"No live pose for {target_name} -- aborting.")
+            return {"target": target_name, "success": False, "reason": "no_live_pose"}
 
-        world_x = pose.position.x - ROBOT_X
-        world_y = pose.position.y - ROBOT_Y
-        cos_yaw = np.cos(-ROBOT_YAW)
-        sin_yaw = np.sin(-ROBOT_YAW)
-        x = world_x * cos_yaw - world_y * sin_yaw
-        y = world_x * sin_yaw + world_y * cos_yaw
+        x, y = self.world_to_local(pose.position.x, pose.position.y)
         z_center = pose.position.z
 
         self.get_logger().info(
@@ -368,21 +469,19 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         approach_result = solve_ik(self.chain, approach_target)
         if approach_result is None:
             self.get_logger().error(f"UNREACHABLE: {approach_target}")
-            return
+            return {"target": target_name, "success": False, "reason": "unreachable_approach"}
         approach, _ = approach_result
 
         grasp_result = solve_ik(self.chain, grasp_target)
         if grasp_result is None:
             self.get_logger().error(f"UNREACHABLE: {grasp_target}")
-            return
+            return {"target": target_name, "success": False, "reason": "unreachable_grasp"}
         grasp, grasp_full_sol = grasp_result
 
         achieved_robot_frame = self.chain.forward_kinematics(grasp_full_sol)[:3, 3]
-        ax, ay = achieved_robot_frame[0], achieved_robot_frame[1]
-        cos_yaw2 = np.cos(ROBOT_YAW)
-        sin_yaw2 = np.sin(ROBOT_YAW)
-        world_check_x = ax * cos_yaw2 - ay * sin_yaw2 + ROBOT_X
-        world_check_y = ax * sin_yaw2 + ay * cos_yaw2 + ROBOT_Y
+        world_check_x, world_check_y = local_to_world(
+            achieved_robot_frame[0], achieved_robot_frame[1],
+            self.robot_x, self.robot_y, self.robot_yaw)
         self.get_logger().info(
             f"[SELF-CHECK] Hand will move to WORLD ({world_check_x:.3f}, {world_check_y:.3f}) "
             f"-- compare to apple's world pos above.")
@@ -405,27 +504,51 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         pose_before_world = (pose.position.x, pose.position.y, pose.position.z)
         rclpy.spin_once(self, timeout_sec=0.5)
-        pose_after_world = None
+        pose_after_lift_world = None
         if self.target_pose is not None:
-            pose_after_world = (self.target_pose.position.x, self.target_pose.position.y,
-                                 self.target_pose.position.z)
+            pose_after_lift_world = (self.target_pose.position.x, self.target_pose.position.y,
+                                      self.target_pose.position.z)
 
-        success = (grip_ok and safety_ok and pose_after_world is not None
-                   and pose_after_world[2] > pose_before_world[2] + 0.03)
+        lifted_ok = (grip_ok and safety_ok and pose_after_lift_world is not None
+                     and pose_after_lift_world[2] > pose_before_world[2] + 0.03)
+
+        placed_ok = False
+        pose_final_world = pose_after_lift_world
+        if lifted_ok:
+            placed_ok = self.layer_place()
+            for _ in range(10):
+                rclpy.spin_once(self, timeout_sec=0.2)
+            if self.target_pose is not None:
+                pose_final_world = (self.target_pose.position.x, self.target_pose.position.y,
+                                     self.target_pose.position.z)
+                dist_to_crate = float(np.hypot(pose_final_world[0] - CRATE_WORLD_XY[0],
+                                                pose_final_world[1] - CRATE_WORLD_XY[1]))
+                if dist_to_crate > 0.3:
+                    self.get_logger().warn(
+                        f"[Place] Apple settled {dist_to_crate:.2f}m from crate center -- missed.")
+                    placed_ok = False
+
+        success = lifted_ok and placed_ok
 
         self.layer7_log_experience({
             "timestamp": time.time(),
-            "object": self.target_name,
+            "object": target_name,
+            "station": {"robot_x": self.robot_x, "robot_y": self.robot_y, "robot_yaw": self.robot_yaw},
             "vlm_analysis": vlm_result,
             "grip_plan": plan,
             "grip_contacted_fingers_ok": grip_ok,
             "safety_ok": safety_ok,
+            "lifted_ok": lifted_ok,
+            "placed_ok": placed_ok,
             "pose_before_world": pose_before_world,
-            "pose_after_world": pose_after_world,
+            "pose_after_lift_world": pose_after_lift_world,
+            "pose_final_world": pose_final_world,
             "success": success,
         })
 
-        self.get_logger().info(f"=== RESULT for {self.target_name}: {'SUCCESS' if success else 'FAILED'} ===")
+        self.get_logger().info(f"=== RESULT for {target_name}: {'SUCCESS' if success else 'FAILED'} ===")
+        return {"target": target_name, "success": success, "grip_ok": grip_ok,
+                "safety_ok": safety_ok, "lifted_ok": lifted_ok, "placed_ok": placed_ok}
 
 
 def main():
@@ -433,8 +556,8 @@ def main():
         print("Usage: python3 full_layer_grasp.py <object_name>")
         sys.exit(1)
     rclpy.init()
-    node = FullLayerGraspNode(sys.argv[1])
-    node.run()
+    node = FullLayerGraspNode()
+    node.run_for_target(sys.argv[1])
     node.destroy_node()
     rclpy.shutdown()
 

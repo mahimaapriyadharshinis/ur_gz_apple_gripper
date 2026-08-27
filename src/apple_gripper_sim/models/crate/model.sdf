@@ -1,0 +1,80 @@
+<?xml version="1.0" ?>
+<sdf version="1.7">
+  <model name="crate">
+    <!-- Small on purpose: outer footprint 0.22x0.22 (half-extent 0.11m) so it clears
+         the mobile base's rotated 0.6x0.8m footprint from the delivery station with
+         margin. See CRATE_LOCAL_XY in full_layer_grasp.py -- do not enlarge this
+         without re-checking clearance against the mobile base pose. -->
+    <static>true</static>
+    <pose>0 0 0 0 0 0</pose>
+    <link name="link">
+      <collision name="floor_collision">
+        <pose>0 0 0.01 0 0 0</pose>
+        <geometry><box><size>0.22 0.22 0.02</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.8</mu><mu2>0.8</mu2></ode></friction>
+        </surface>
+      </collision>
+      <visual name="floor_visual">
+        <pose>0 0 0.01 0 0 0</pose>
+        <geometry><box><size>0.22 0.22 0.02</size></box></geometry>
+        <material>
+          <ambient>0.45 0.30 0.15 1</ambient>
+          <diffuse>0.45 0.30 0.15 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="wall_front_collision">
+        <pose>0 0.10 0.08 0 0 0</pose>
+        <geometry><box><size>0.22 0.02 0.12</size></box></geometry>
+      </collision>
+      <visual name="wall_front_visual">
+        <pose>0 0.10 0.08 0 0 0</pose>
+        <geometry><box><size>0.22 0.02 0.12</size></box></geometry>
+        <material>
+          <ambient>0.55 0.38 0.20 1</ambient>
+          <diffuse>0.55 0.38 0.20 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="wall_back_collision">
+        <pose>0 -0.10 0.08 0 0 0</pose>
+        <geometry><box><size>0.22 0.02 0.12</size></box></geometry>
+      </collision>
+      <visual name="wall_back_visual">
+        <pose>0 -0.10 0.08 0 0 0</pose>
+        <geometry><box><size>0.22 0.02 0.12</size></box></geometry>
+        <material>
+          <ambient>0.55 0.38 0.20 1</ambient>
+          <diffuse>0.55 0.38 0.20 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="wall_left_collision">
+        <pose>0.10 0 0.08 0 0 0</pose>
+        <geometry><box><size>0.02 0.18 0.12</size></box></geometry>
+      </collision>
+      <visual name="wall_left_visual">
+        <pose>0.10 0 0.08 0 0 0</pose>
+        <geometry><box><size>0.02 0.18 0.12</size></box></geometry>
+        <material>
+          <ambient>0.55 0.38 0.20 1</ambient>
+          <diffuse>0.55 0.38 0.20 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="wall_right_collision">
+        <pose>-0.10 0 0.08 0 0 0</pose>
+        <geometry><box><size>0.02 0.18 0.12</size></box></geometry>
+      </collision>
+      <visual name="wall_right_visual">
+        <pose>-0.10 0 0.08 0 0 0</pose>
+        <geometry><box><size>0.02 0.18 0.12</size></box></geometry>
+        <material>
+          <ambient>0.55 0.38 0.20 1</ambient>
+          <diffuse>0.55 0.38 0.20 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

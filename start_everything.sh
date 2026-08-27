@@ -2,7 +2,10 @@
 set -e
 source /opt/ros/humble/setup.bash
 source ~/ur_gz_ws/install/setup.bash
-export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:~/ur_gz_ws/src:~/ur_gz_ws/src/dexhandv2_description:~/ur_gz_ws/install/dexhandv2_description/share
+export LIBGL_ALWAYS_SOFTWARE=1
+export OGRE_RTT_MODE=Copy
+export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:~/ur_gz_ws/src:~/ur_gz_ws/src/dexhandv2_description:~/ur_gz_ws/install/dexhandv2_description/share:~/ur_gz_ws/src/apple_gripper_sim/models
+export IGN_GAZEBO_SYSTEM_PLUGIN_PATH=$IGN_GAZEBO_SYSTEM_PLUGIN_PATH:/opt/ros/humble/lib
 
 echo "=== Killing any leftover processes ==="
 pkill -9 -f "ign gazebo server" 2>/dev/null || true
@@ -10,35 +13,47 @@ pkill -9 -f "parameter_bridge" 2>/dev/null || true
 pkill -9 -f "ros2 launch" 2>/dev/null || true
 sleep 2
 
-echo "=== Launching simulation (background) ==="
+echo "=== Launching simulation with apple_world (background) ==="
 setsid ros2 launch ur_simulation_gz ur_sim_control.launch.py \
     ur_type:=ur5e \
     description_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro \
     controllers_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/merged_controllers.yaml \
+    world_file:=/home/mahimaa/ur_gz_ws/src/apple_gripper_sim/worlds/apple_world.world \
     > /tmp/sim_launch.log 2>&1 < /dev/null &
 disown
 
 echo "Waiting for simulation to be ready..."
 sleep 12
 
-echo "=== Spawning red block ==="
-ros2 run ros_gz_sim create -world empty -file ~/ur_gz_ws/src/my_pick_and_place/urdf/red_block.sdf -name red_block -x 0.5 -y 0.0 -z 0.1
-
 echo "=== Activating hand controller ==="
 ros2 run controller_manager spawner dexhand_controller --controller-manager /controller_manager
 
-echo "=== Starting pose bridge (background) ==="
-ros2 run ros_gz_bridge parameter_bridge /model/red_block/pose@geometry_msgs/msg/Pose[ignition.msgs.Pose > /tmp/pose_bridge.log 2>&1 &
+echo "=== Starting gripper camera bridge (background) ==="
+ros2 run ros_gz_bridge parameter_bridge \
+    /gripper_camera@sensor_msgs/msg/Image[ignition.msgs.Image \
+    > /tmp/camera_bridge.log 2>&1 &
+disown
 
-echo "=== Starting attach/detach bridge (background) ==="
-ros2 run ros_gz_bridge parameter_bridge /attach@std_msgs/msg/Empty]ignition.msgs.Empty /detach@std_msgs/msg/Empty]ignition.msgs.Empty > /tmp/attach_bridge.log 2>&1 &
+echo "=== Starting apple pose bridges (background) ==="
+for i in 01 02 03 04 05 06 07 08 09 10; do
+    ros2 run ros_gz_bridge parameter_bridge \
+        "/model/apple_${i}/pose@geometry_msgs/msg/Pose[ignition.msgs.Pose" \
+        >> /tmp/pose_bridges.log 2>&1 &
+    disown
+done
 
 sleep 3
 echo ""
 echo "=== SETUP COMPLETE. Verifying... ==="
 ros2 control list_controllers
 echo ""
-ign topic -l | grep -i attach
+ros2 topic list | grep -E "model/apple|gripper_camera"
 echo ""
-echo "If you see dexhand_controller ACTIVE and /attach listed above, everything is ready."
-echo "Now run: python3 ~/ur_gz_ws/src/my_pick_and_place/scripts/pick_and_place.py"
+echo "If dexhand_controller is ACTIVE and all 10 apple pose topics + gripper_camera are"
+echo "listed above, everything is ready."
+echo ""
+echo "Single apple (also runs the new place-in-crate step):"
+echo "  python3 ~/ur_gz_ws/src/my_pick_and_place/scripts/full_layer_grasp.py apple_06"
+echo ""
+echo "For the VLM layer (Layer 1), in a separate terminal:"
+echo "  cd ~/vlm_scripts && source /opt/ros/humble/setup.bash && python3 vlm_fragility_node.py"

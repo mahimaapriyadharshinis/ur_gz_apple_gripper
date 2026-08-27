@@ -47,14 +47,13 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
-# EXPERIMENTAL: moving the station further from the apple row (was Y=-0.55). Neither
-# eliminating the lateral offset (ROBOT_X change) nor reseeding the IK solver at the
-# target's real direction changed the resulting arm configuration at all (identical
-# joint angles both times) -- meaning -132deg is likely the only valid solution for
-# reaching this close, low position with the hand pointed straight down, not a solver
-# seeding problem. Testing whether more perpendicular distance gives the arm room for
-# a natural configuration instead.
-DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.25, -0.75
+# find_station.py swept 70 candidate (X, Y) combinations and computed the REAL
+# shoulder-pan mismatch for each via solve_ik (not a guess) -- confirmed that no
+# station gets close to a "natural" (near-zero mismatch) reach for apple_06's low
+# grasp height; the best of all 70 was still 35.6 degrees off. This is the best one
+# found: (1.40, -0.90). The twisted arm shape is an inherent characteristic of
+# reaching this low with the hand pointed straight down, not a station-placement bug.
+DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.40, -0.90
 DELIVERY_ROBOT_YAW = 1.5708
 # Place target in the delivery station's local (base_footprint-relative) frame --
 # same frame/convention as apple grasp targets, deliberately on the opposite side
@@ -116,11 +115,11 @@ def build_chain():
 # this task (finger closing envelope is far larger) while still being solidly accurate.
 IK_ERROR_TOLERANCE = 0.025
 IK_FALLBACK_ERROR_CEILING = 0.05
-# Flip to -1 if the hand ends up facing AWAY from the target instead of toward it --
-# nothing previously constrained which horizontal direction the hand faces while
-# pointing down, so this is an untested best guess (radially outward from the base)
-# until confirmed against the real sim.
-HAND_FACING_SIGN = 1
+# Was +1 (untested guess). User confirmed the hand was touching the ground beside
+# the apple, not the apple itself, with the wrist position otherwise verified
+# correct -- consistent with fingers facing the wrong horizontal direction.
+# Flipping to test the opposite sign.
+HAND_FACING_SIGN = -1
 
 
 def solve_ik(chain, target_xyz, init=None):

@@ -97,7 +97,7 @@
     <include>
       <uri>model://crate</uri>
       <name>crate</name>
-      <pose>1.25 -1.15 0.0 0 0 0</pose>
+      <pose>1.25 -1.35 0.0 0 0 0</pose>
     </include>
 
   </world>

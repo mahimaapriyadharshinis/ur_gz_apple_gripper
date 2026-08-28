@@ -244,6 +244,16 @@ def solve_ik(chain, target_xyz, init=None):
          'wrist_1_joint': -1.97, 'wrist_2_joint': -1.5708},
         {'shoulder_pan_joint': expected_pan, 'shoulder_lift_joint': -0.5, 'elbow_joint': 0.9,
          'wrist_1_joint': -2.0, 'wrist_2_joint': -1.5708},
+        # Approaching from the opposite pan direction with a MILD shoulder_lift, rather
+        # than facing the target directly with an extreme shoulder_lift, is sometimes
+        # the only non-contorted way to point the hand straight down at a close, low
+        # target for this arm's geometry -- confirmed directly: an unlocked solve for
+        # apple_06's exact grasp point converged cleanly here (pan=169deg,
+        # shoulder_lift=-18deg) while every guess seeded at expected_pan instead
+        # converged to shoulder_lift beyond -160deg (later proven, via real
+        # /joint_states data, to physically collide with the robot's own body).
+        {'shoulder_pan_joint': expected_pan + np.pi, 'shoulder_lift_joint': -0.3,
+         'elbow_joint': 0.0, 'wrist_1_joint': 1.9, 'wrist_2_joint': 1.5708},
         {},
     ]
     for preset in presets:
@@ -302,19 +312,25 @@ def solve_ik(chain, target_xyz, init=None):
                             if err < IK_FALLBACK_ERROR_CEILING and dot > ORIENTATION_DOT_MIN_LOOSE]
 
     # ikpy has no concept of collisions -- joint limits here are +-2*pi (URDF), wide
-    # enough that a mathematically valid solution can still swing an arm joint more
-    # than a full 180 degrees past center, physically sweeping it through the robot's
-    # own body to get there. Confirmed with real data: commanded shoulder_lift=-193deg
-    # was NEVER reached -- /joint_states showed it stuck at -213deg with 71Nm of
-    # torque (every other joint was <1Nm), while every OTHER commanded joint matched
-    # its real encoder value almost exactly. That's a physical collision, not a math
-    # error, and it's why the wrist ended up somewhere ikpy never predicted. Preferring
-    # solutions that stay within a normal +-180deg swing per joint avoids configurations
-    # that require passing through the robot's own body, without a hard requirement
-    # (fall back to the unfiltered set if nothing normal-range is available).
+    # enough that a mathematically valid solution can still swing an arm joint far past
+    # center, physically sweeping it through the robot's own body to get there.
+    # Confirmed with real data: commanded shoulder_lift=-193deg was NEVER reached --
+    # /joint_states showed it stuck at -213deg with 71Nm of torque (every other joint
+    # was <1Nm). A +-180deg cap on all arm joints still let a -162deg, straight-elbow
+    # (0deg) solution through -- same collision risk, just under the wire -- and a
+    # verified-good alternative for the same target used shoulder_lift=-18deg, so
+    # shoulder_lift specifically (the joint that swings the heavy upper arm back into
+    # the mobile base/ground) gets a much tighter cap than the rest.
+    SHOULDER_LIFT_SWING_LIMIT = 2.35  # ~135 degrees
+
     def within_normal_swing(sol):
-        return all(abs(a) <= np.pi + 1e-6
-                   for link, a in zip(chain.links, sol) if link.name in ARM_JOINTS)
+        for link, a in zip(chain.links, sol):
+            if link.name not in ARM_JOINTS:
+                continue
+            limit = SHOULDER_LIFT_SWING_LIMIT if link.name == 'shoulder_lift_joint' else np.pi
+            if abs(a) > limit + 1e-6:
+                return False
+        return True
 
     normal_swing_solutions = [sol for sol in valid_solutions if within_normal_swing(sol)]
     if normal_swing_solutions:
@@ -361,14 +377,19 @@ def solve_ik(chain, target_xyz, init=None):
         hand_x_axis = chain.forward_kinematics(sol)[:3, 0]
         return float(np.dot(hand_x_axis, desired_facing))
 
-    # PRIMARILY avoid "mirror" arm configurations (same wrist position, shoulder rotated
-    # to roughly the opposite side, elbow flipped) -- a real bug that slipped through the
-    # previous all-or-nothing 60-degree cutoff (it fell back to accepting ANY solution,
-    # including mirrored ones, when nothing passed). Sorting by pan mismatch first, with
-    # facing/motion only as tiebreaks among comparably-good arm configurations, prevents
-    # that regardless of whether anything happens to clear a fixed threshold.
+    # Sorting by pan mismatch / facing_alignment first (an earlier version of this
+    # function) kept selecting extreme, straight-elbow configurations -- e.g.
+    # shoulder_lift=-162deg with elbow=0deg, confirmed by screenshot AND real
+    # /joint_states data to physically collide with the robot's own body -- because
+    # those criteria say nothing about HOW extreme a solution's joint angles are, and
+    # facing_alignment in particular is a hand-tuned heuristic (HAND_FACING_SIGN) from
+    # earlier, buggier debugging that has no verified relationship to collision safety.
+    # total_motion (total joint movement from zero) is a direct, physically meaningful
+    # proxy for "does this look like a normal reach or a contorted one" -- minimizing
+    # it first favors a moderately-bent elbow and a shoulder that isn't swung to an
+    # extreme, exactly the property the earlier criteria failed to capture.
     best = min(valid_solutions, key=lambda sol: (
-        angle_diff(pan_of(sol), expected_pan), -facing_alignment(sol), total_motion(sol)))
+        total_motion(sol), angle_diff(pan_of(sol), expected_pan), -facing_alignment(sol)))
     joints = {link.name: float(a) for link, a in zip(chain.links, best) if link.name in ARM_JOINTS}
     return [joints[j] for j in ARM_JOINTS], best
 

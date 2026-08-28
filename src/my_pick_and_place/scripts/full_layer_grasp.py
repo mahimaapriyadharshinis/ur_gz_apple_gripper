@@ -872,13 +872,25 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 f"[Real wrist check #{correction_iter}] intended=({grasp_target[0]:.3f}, "
                 f"{grasp_target[1]:.3f}, {grasp_target[2]:.3f}) real=({rwx:.3f}, {rwy:.3f}, "
                 f"{rwz:.3f}) error={werr:.3f}m")
+            # shoulder_lift_joint landed at EXACTLY the same real angle (-1.5deg)
+            # across three attempts commanding it to 13.0, 27.4, and 40.5deg -- never
+            # moving even 0.1deg despite a 27.5deg spread of different commands, while
+            # every other joint tracked its own command closely each time. That rules
+            # out ordinary gravity sag (which would still respond somewhat to
+            # different commands) in favor of either a genuine physical obstruction
+            # (the joint straining hard against something, most likely a collision
+            # with the mobile base directly below the shoulder) or the command simply
+            # never reaching this joint. Effort distinguishes the two: near-zero means
+            # the command isn't landing; high means it's genuinely stuck fighting
+            # something.
             real_vs_commanded = []
             for jname, commanded_val in zip(ARM_JOINTS, grasp):
-                real_val = self.latest_joint_state.get(jname, (None, None, None))[0]
+                state = self.latest_joint_state.get(jname, (None, None, None))
+                real_val, real_effort = state[0], state[2]
                 if real_val is not None:
                     real_vs_commanded.append(
                         f"{jname}: commanded={np.degrees(commanded_val):.1f} "
-                        f"real={np.degrees(real_val):.1f} deg")
+                        f"real={np.degrees(real_val):.1f}deg effort={real_effort:.2f}Nm")
             self.get_logger().info("[Real joint check] " + " | ".join(real_vs_commanded))
 
             if werr < POSITION_TOLERANCE:

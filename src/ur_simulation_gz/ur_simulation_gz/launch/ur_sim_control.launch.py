@@ -175,7 +175,7 @@ def launch_setup(context, *args, **kwargs):
             "-x",
             "1.25",
             "-y",
-            "-0.70",
+            "-0.90",
             "-z",
             "0.0",
             "-Y",

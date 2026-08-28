@@ -49,17 +49,16 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
-# ur5e_dexhand.xacro's base_footprint_joint used to carry a hardcoded (1.375, -0.55,
-# +90deg) offset between base_footprint (what teleport() moves) and the real arm
-# mount -- meaning every station value tuned before that was fixed was tuned against
-# a phantom frame, not the real one. Now that it's removed, solve_ik's shoulder-pan
-# lock (see solve_ik()) makes the mismatch a genuine, trustworthy reachability signal:
-# 0.0 degrees = solved with the arm actually facing the target; UNREACHABLE = out of
-# real reach. find_station.py's sweep against apple_06 (world 1.25, 0.00, grasp
-# height 0.604) found this fully reachable with 0.0 degree mismatch and enough margin
-# to also clear the +0.15m approach hover height, while staying far enough from the
-# table edge (0.6x0.8m rotated base footprint) not to collide with it.
-DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.25, -0.70
+# -0.70 was close enough that reaching down onto the apple row required the forearm
+# to sweep in low and shallow, straight through the table -- shoulder_lift_joint was
+# hitting its 150Nm effort limit and getting physically stuck near 0deg no matter
+# what it was commanded to (confirmed NOT a self-collision or the camera pole, both
+# ruled out with real data). -0.90 solves with shoulder_lift=-18deg -- mild, and in
+# the same (negative) direction the joint already moves freely in during the rest
+# pose reset -- giving the arm room to approach from a steeper angle that clears the
+# table. Every station tested beyond -0.90 was UNREACHABLE, so this is the farthest,
+# safest working distance.
+DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.25, -0.90
 DELIVERY_ROBOT_YAW = 1.5708
 # Place target in the delivery station's local (base_footprint-relative) frame --
 # same frame/convention as apple grasp targets, deliberately on the opposite side

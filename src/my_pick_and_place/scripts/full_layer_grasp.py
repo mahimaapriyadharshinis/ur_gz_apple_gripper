@@ -9,6 +9,7 @@ import json
 import base64
 import os
 import subprocess
+import xml.etree.ElementTree as ET
 import numpy as np
 import requests
 import cv2
@@ -92,9 +93,72 @@ CRATE_WORLD_XY = local_to_world(CRATE_LOCAL_XY[0], CRATE_LOCAL_XY[1],
                                  DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW)
 
 
+ARM_ONLY_URDF_PATH = "/tmp/real_robot_exact_arm_only.urdf"
+# dexhand_base_link must end up with NO children in the pruned URDF, so it's the
+# chain's unambiguous leaf/end-effector -- everything mounted on it (5 fingers, the
+# gripper camera) has to go, not just the fingers.
+_HAND_ROOT_LINK = 'dexhand_base_link'
+
+
+def _write_arm_only_urdf(source_path, dest_path):
+    """ikpy.Chain treats whatever the URDF's last reachable link is as the chain's
+    end effector for inverse_kinematics()'s internal optimization -- it does NOT stop
+    at 'dexhand_base_link' just because build_chain()'s base_elements lists it last.
+    Since the real URDF branches at dexhand_base_link (5 fingers, plus the gripper
+    camera), ikpy silently keeps walking into whichever branch appears first in the
+    file (the thumb) and solves IK to place the THUMB TIP there instead of the wrist
+    -- confirmed by dumping chain.links and seeing R_Thumb_Yaw/Roll/... appear after
+    tool0_to_dexhand. That mismatched frame (offset ~13cm, and rotated onto the
+    thumb's own skewed mounting axis) is what forced the solver into contorted,
+    wrong-looking arm shapes: it was satisfying "point the thumb down" while
+    self-checking a "thumb at target" position, not the wrist. Dropping every joint
+    mounted on dexhand_base_link here makes it the chain's real, unambiguous last
+    link, so IK actually solves for wrist placement. Finger motion is commanded
+    separately via command_fingers()/the dexhand_controller topic, and the gripper
+    camera doesn't need to be part of the arm-planning chain at all, so neither loses
+    anything by being left out of this IK-only copy of the URDF.
+    """
+    tree = ET.parse(source_path)
+    root = tree.getroot()
+
+    # Map every link to its direct children, from ALL joints (unfiltered), so the walk
+    # below can follow a finger chain all the way to its tip -- fingers are several
+    # joints deep (Yaw -> Roll -> Pitch -> Flexor -> DIP), not just one hop from
+    # dexhand_base_link, so a filter that only looked at each joint's own immediate
+    # parent (an earlier version of this function) missed everything past the first
+    # joint in each chain, leaving deeper joints referencing links that had already
+    # been deleted -- an invalid, dangling URDF. Collecting the full downstream set
+    # first and then dropping every joint whose CHILD is in it removes each chain
+    # completely, at any depth, in one pass.
+    all_children_of = {}
+    for joint in root.findall('joint'):
+        parent = joint.find('parent').get('link')
+        child = joint.find('child').get('link')
+        all_children_of.setdefault(parent, []).append(child)
+
+    to_remove = set()
+    frontier = list(all_children_of.get(_HAND_ROOT_LINK, []))
+    while frontier:
+        link_name = frontier.pop()
+        if link_name in to_remove:
+            continue
+        to_remove.add(link_name)
+        frontier.extend(all_children_of.get(link_name, []))
+
+    for joint in root.findall('joint'):
+        if joint.find('child').get('link') in to_remove:
+            root.remove(joint)
+    for link in root.findall('link'):
+        if link.get('name') in to_remove:
+            root.remove(link)
+
+    tree.write(dest_path)
+
+
 def build_chain():
+    _write_arm_only_urdf(URDF_PATH, ARM_ONLY_URDF_PATH)
     chain = ikpy.chain.Chain.from_urdf_file(
-        URDF_PATH,
+        ARM_ONLY_URDF_PATH,
         base_elements=[
             'base_footprint', 'base_footprint_joint', 'mobile_base_link',
             'base_joint', 'base_link',
@@ -124,6 +188,30 @@ IK_FALLBACK_ERROR_CEILING = 0.05
 # correct -- consistent with fingers facing the wrong horizontal direction.
 # Flipping to test the opposite sign.
 HAND_FACING_SIGN = -1
+
+# ikpy names each chain entry after the JOINT before it, not the resulting link, and
+# a Chain built from a branching URDF keeps walking past the intended end effector
+# into whichever branch comes first in the file -- confirmed by dumping chain.links:
+# after 'tool0_to_dexhand' (the wrist mount, zero-offset from dexhand_base_link) the
+# chain continues straight into the thumb (R_Thumb_Yaw, R_Thumb_Roll, ...), ending at
+# the thumb TIP, ~13cm away and rotated onto the thumb's own skewed mounting axis.
+# chain.forward_kinematics(sol)[:3, 3] (ikpy's default "last link") was therefore
+# aiming the thumb tip at the target and pointing the THUMB'S axis down, not the
+# wrist's -- forcing the solver into contorted arm shapes to satisfy an orientation
+# constraint on the wrong frame, while the self-check (same wrong frame) still looked
+# correct. Reading FK at 'tool0_to_dexhand' specifically gives the real wrist pose.
+HAND_JOINT_NAME = 'tool0_to_dexhand'
+
+
+def hand_fk(chain, solution):
+    """Forward kinematics of the actual wrist/palm mount point (see HAND_JOINT_NAME
+    comment above) -- NOT chain.forward_kinematics()'s default last-link result,
+    which is a thumb-tip pose on this branching DexHand URDF."""
+    frames = chain.forward_kinematics(solution, full_kinematics=True)
+    for link, frame in zip(chain.links, frames):
+        if link.name == HAND_JOINT_NAME:
+            return frame
+    raise ValueError(f"'{HAND_JOINT_NAME}' not found in chain -- URDF structure changed?")
 
 
 def solve_ik(chain, target_xyz, init=None):
@@ -206,7 +294,7 @@ def solve_ik(chain, target_xyz, init=None):
                 target_xyz, initial_position=g,
                 target_orientation=[0, 0, -1], orientation_mode='Z'
             )
-            fk = chain.forward_kinematics(solution)
+            fk = hand_fk(chain, solution)
             achieved_pos = fk[:3, 3]
             achieved_z = fk[:3, 2]
             error = np.linalg.norm(np.array(target_xyz) - achieved_pos)
@@ -627,32 +715,13 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"expected_shoulder_pan={expected_pan:.1f} actual_shoulder_pan={actual_pan:.1f} "
             f"(large mismatch here means a 'mirror' arm configuration, not a hand-facing issue)")
 
-        achieved_robot_frame = self.chain.forward_kinematics(grasp_full_sol)[:3, 3]
+        achieved_robot_frame = hand_fk(self.chain, grasp_full_sol)[:3, 3]
         world_check_x, world_check_y = local_to_world(
             achieved_robot_frame[0], achieved_robot_frame[1],
             self.robot_x, self.robot_y, self.robot_yaw)
         self.get_logger().info(
             f"[SELF-CHECK] Hand will move to WORLD ({world_check_x:.3f}, {world_check_y:.3f}) "
             f"-- compare to apple's world pos above.")
-
-        # Temporary diagnostic: log ikpy's own FK for every named link along the chain
-        # (not just the end effector), in the base_footprint-local frame -- the same
-        # frame `tf2_echo base_footprint <link>` reports. Run tf2_echo on a couple of
-        # these link names (e.g. shoulder_link, wrist_1_link) alongside a test to see
-        # exactly where ikpy's math and the real simulated robot start disagreeing,
-        # rather than only comparing at the far end of the chain.
-        try:
-            frames = self.chain.forward_kinematics(grasp_full_sol, full_kinematics=True)
-            watch_links = ('shoulder_link', 'upper_arm_link', 'forearm_link',
-                            'wrist_1_link', 'wrist_2_link', 'wrist_3_link',
-                            'dexhand_base_link')
-            for link, frame in zip(self.chain.links, frames):
-                if link.name in watch_links:
-                    p = frame[:3, 3]
-                    self.get_logger().info(
-                        f"[FK-per-link] {link.name}: local=({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f})")
-        except Exception as e:
-            self.get_logger().warn(f"[FK-per-link] failed: {e}")
 
         self.get_logger().info("Opening hand, moving to approach position...")
         self.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.0)

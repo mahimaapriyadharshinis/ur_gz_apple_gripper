@@ -921,6 +921,39 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 f"({self.target_pose.position.x:.3f}, {self.target_pose.position.y:.3f}, "
                 f"{self.target_pose.position.z:.3f}), drift from original={drift:.3f}m")
 
+            # The hand (even open) can brush the apple during the final part of the
+            # descent and nudge it sideways along the table before closing even
+            # starts -- confirmed directly: a 0.073m drift was measured here while
+            # the wrist itself landed within 0.013m of ITS intended target, meaning
+            # the apple moved, not the arm. Closing on the original target after
+            # that just grabs empty air where the apple used to be. Re-aiming at
+            # wherever the apple actually ended up makes the sequence robust to
+            # this instead of assuming it stayed put.
+            if drift > 0.02:
+                self.get_logger().info(
+                    f"[Re-center] Apple drifted {drift:.3f}m during lowering -- "
+                    f"re-aiming at its real current position.")
+                new_local_x, new_local_y = self.world_to_local(
+                    self.target_pose.position.x, self.target_pose.position.y)
+                recenter_target = [new_local_x, new_local_y, grasp_target[2]]
+                recenter_result = solve_ik(self.chain, recenter_target)
+                if recenter_result is not None:
+                    grasp, grasp_full_sol = recenter_result
+                    self.send_arm_trajectory(grasp, 1.5)
+                    self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=10.0,
+                                          min_wait=1.5)
+                    real_wrist = self.real_wrist_position()
+                    if real_wrist is not None:
+                        self.get_logger().info(
+                            f"[Re-center] re-solved for ({recenter_target[0]:.3f}, "
+                            f"{recenter_target[1]:.3f}, {recenter_target[2]:.3f}), real "
+                            f"wrist now ({real_wrist[0]:.3f}, {real_wrist[1]:.3f}, "
+                            f"{real_wrist[2]:.3f})")
+                else:
+                    self.get_logger().warn(
+                        f"[Re-center] target {recenter_target} UNREACHABLE -- "
+                        f"proceeding with the stale target.")
+
         vlm_result = self.layer1_vlm_analysis()
         plan = self.layer2_imagination(vlm_result)
         grip_ok = self.layer3_4_close_with_feedback(plan, vlm_result)

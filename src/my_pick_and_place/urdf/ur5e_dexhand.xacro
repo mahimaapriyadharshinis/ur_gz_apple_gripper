@@ -108,6 +108,26 @@
     <origin xyz="0 0 0.285" rpy="0 0 0"/>
   </xacro:ur_robot>
 
+  <!-- shoulder_lift_joint was hitting its 150Nm effort limit and getting physically
+       stuck near 0deg no matter what angle it was commanded to (it could reach its
+       -68.75deg rest pose fine, but nothing positive/forward); confirmed NOT the
+       overhead camera pole (moved well clear of the robot, problem persisted
+       identically). The most likely remaining cause is the arm's own upper_arm_link
+       swinging down into mobile_base_link's box, which sits directly beneath the
+       shoulder mount. selfCollide was already found and disabled on all DexHand
+       finger links earlier for the same symptom (a finger spiking to 33Nm against
+       itself); this applies the identical fix to the arm's own links against the
+       mobile base they're mounted on. -->
+  <gazebo reference="mobile_base_link"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="base_link"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="base_link_inertia"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="shoulder_link"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="upper_arm_link"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="forearm_link"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="wrist_1_link"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="wrist_2_link"><selfCollide>false</selfCollide></gazebo>
+  <gazebo reference="wrist_3_link"><selfCollide>false</selfCollide></gazebo>
+
   <!-- Attach DexHand Flush -->
   <xacro:include filename="$(find dexhandv2_description)/urdf/dexhandv2_right.urdf"/>
   <joint name="tool0_to_dexhand" type="fixed">

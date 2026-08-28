@@ -467,11 +467,19 @@ class FullLayerGraspNode(Node):
         how long the real settling time actually turns out to be.
         """
         start = time.time()
+        last_max_vel = None
         while rclpy.ok() and (time.time() - start) < timeout:
             rclpy.spin_once(self, timeout_sec=0.1)
             velocities = [abs(self.latest_joint_state.get(name, (0, 0, 0))[1]) for name in joint_names]
-            if velocities and max(velocities) < vel_threshold:
-                return True
+            if velocities:
+                last_max_vel = max(velocities)
+                if last_max_vel < vel_threshold:
+                    return True
+        if last_max_vel is not None:
+            self.get_logger().warn(
+                f"[wait_for_settled] timed out after {timeout:.1f}s, "
+                f"max joint velocity was {last_max_vel:.4f} rad/s "
+                f"(threshold={vel_threshold:.4f})")
         return False
 
     def teleport(self, x, y, yaw):
@@ -792,7 +800,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         # actively in motion, well off from the apple. No fixed sleep duration is
         # reliable against a real, variable settling time like that, so wait for the
         # arm's own actual velocity to confirm it has genuinely stopped instead.
-        settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.02, timeout=15.0)
+        settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=20.0)
         if not settled:
             self.get_logger().warn(
                 "[Lowering] Arm did not settle to near-zero velocity within 15s -- "

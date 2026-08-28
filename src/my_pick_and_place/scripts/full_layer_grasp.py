@@ -186,7 +186,19 @@ def solve_ik(chain, target_xyz, init=None):
         for g in guesses:
             g[pan_index] = expected_pan
 
-    valid_solutions = []
+    # target_orientation is fed into the optimizer as ONE term in its combined cost
+    # (position + orientation), so a guess can converge with near-zero position error
+    # while still trading away orientation -- e.g. shoulder_lift=-157deg, elbow=0deg,
+    # a straight-armed sweep-back branch that lands on the right xyz but never actually
+    # points the hand down at the table (confirmed visually: the hand ends up roughly
+    # horizontal, not descending onto the apple). Filtering only on position error, as
+    # before, let that branch through untouched. Now checking the achieved Z-axis
+    # against straight-down explicitly, and requiring both, is what actually catches it.
+    desired_z_axis = np.array([0.0, 0.0, -1.0])
+    ORIENTATION_DOT_MIN = 0.9  # ~26 degrees off straight-down, still clearly "pointing down"
+    ORIENTATION_DOT_MIN_LOOSE = 0.7  # ~46 degrees -- fallback tier if nothing is that clean
+
+    results = []
     best_solution, best_error = None, float('inf')
     try:
         for g in guesses:
@@ -194,18 +206,29 @@ def solve_ik(chain, target_xyz, init=None):
                 target_xyz, initial_position=g,
                 target_orientation=[0, 0, -1], orientation_mode='Z'
             )
-            achieved = chain.forward_kinematics(solution)[:3, 3]
-            error = np.linalg.norm(np.array(target_xyz) - achieved)
+            fk = chain.forward_kinematics(solution)
+            achieved_pos = fk[:3, 3]
+            achieved_z = fk[:3, 2]
+            error = np.linalg.norm(np.array(target_xyz) - achieved_pos)
+            orientation_dot = float(np.dot(achieved_z, desired_z_axis))
+            results.append((solution, error, orientation_dot))
             if error < best_error:
                 best_error, best_solution = error, solution
-            if error < IK_ERROR_TOLERANCE:
-                valid_solutions.append(solution)
     finally:
         chain.active_links_mask = original_mask
 
+    valid_solutions = [sol for sol, err, dot in results
+                        if err < IK_ERROR_TOLERANCE and dot > ORIENTATION_DOT_MIN]
     if not valid_solutions:
-        # Nothing hit the normal tolerance -- fall back to the closest solution found,
-        # as long as it's not wildly off, rather than failing outright on a near-miss.
+        valid_solutions = [sol for sol, err, dot in results
+                            if err < IK_FALLBACK_ERROR_CEILING and dot > ORIENTATION_DOT_MIN_LOOSE]
+
+    if not valid_solutions:
+        # Nothing hit position+orientation together -- fall back to the closest
+        # solution by position alone, as long as it's not wildly off, rather than
+        # failing outright on a near-miss (this may still be poorly oriented, but an
+        # unreachable-looking failure is more visible/debuggable than silently
+        # returning a bad-orientation solution from the tier above).
         if best_solution is not None and best_error < IK_FALLBACK_ERROR_CEILING:
             valid_solutions = [best_solution]
         else:

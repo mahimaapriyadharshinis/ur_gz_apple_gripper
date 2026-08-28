@@ -244,16 +244,6 @@ def solve_ik(chain, target_xyz, init=None):
          'wrist_1_joint': -1.97, 'wrist_2_joint': -1.5708},
         {'shoulder_pan_joint': expected_pan, 'shoulder_lift_joint': -0.5, 'elbow_joint': 0.9,
          'wrist_1_joint': -2.0, 'wrist_2_joint': -1.5708},
-        # Approaching from the opposite pan direction with a MILD shoulder_lift, rather
-        # than facing the target directly with an extreme shoulder_lift, is sometimes
-        # the only non-contorted way to point the hand straight down at a close, low
-        # target for this arm's geometry -- confirmed directly: an unlocked solve for
-        # apple_06's exact grasp point converged cleanly here (pan=169deg,
-        # shoulder_lift=-18deg) while every guess seeded at expected_pan instead
-        # converged to shoulder_lift beyond -160deg (later proven, via real
-        # /joint_states data, to physically collide with the robot's own body).
-        {'shoulder_pan_joint': expected_pan + np.pi, 'shoulder_lift_joint': -0.3,
-         'elbow_joint': 0.0, 'wrist_1_joint': 1.9, 'wrist_2_joint': 1.5708},
         {},
     ]
     for preset in presets:

@@ -253,24 +253,19 @@ def solve_ik(chain, target_xyz, init=None):
                 g[i] = preset[link.name]
         guesses.append(g)
 
-    # Lock shoulder_pan_joint out of the optimization instead of just seeding it at
-    # expected_pan. Seeding alone never worked -- the optimizer was still free to
-    # rotate pan away during its search, and it kept sliding into a "mirror" basin
-    # (same wrist position, shoulder ~180deg to the other side, elbow bent backward)
-    # regardless of which preset it started from. With pan held fixed, the remaining
-    # 5 joints (>=4 needed for xyz + 1-axis orientation) still have a full degree of
-    # freedom to spare, so a natural elbow-up reach stays solvable -- but a mirror
-    # configuration is now mathematically unreachable, not just deprioritized.
-    pan_index = None
-    for i, link in enumerate(chain.links):
-        if link.name == 'shoulder_pan_joint':
-            pan_index = i
-            break
-    original_mask = list(chain.active_links_mask)
-    if pan_index is not None:
-        chain.active_links_mask[pan_index] = False
-        for g in guesses:
-            g[pan_index] = expected_pan
+    # Locking shoulder_pan_joint to expected_pan (an earlier version of this function)
+    # was built to fight a "mirror configuration" symptom that turned out to have two
+    # real, separate causes elsewhere: a stale 1.4m offset baked into the URDF's base
+    # frame, and IK solving for the DexHand's thumb tip instead of the actual wrist
+    # (both now fixed -- see the comments on _write_arm_only_urdf and HAND_JOINT_NAME).
+    # With both of those fixed, forcing pan to expected_pan turned out to make MANY
+    # genuinely reachable targets UNREACHABLE outright: a direct, unlocked
+    # inverse_kinematics() call for a close, low, straight-down-pointing target
+    # converged cleanly (~1cm error) at shoulder_pan=169deg, nowhere near the "expected"
+    # 0deg -- because reaching a close target while keeping the hand vertical often
+    # genuinely requires an unintuitive shoulder angle for this arm's geometry, not
+    # because anything is wrong. expected_pan is still useful as a SEED (below, in the
+    # presets), just not as a hard constraint the optimizer can't move away from.
 
     # target_orientation is fed into the optimizer as ONE term in its combined cost
     # (position + orientation), so a guess can converge with near-zero position error
@@ -286,22 +281,19 @@ def solve_ik(chain, target_xyz, init=None):
 
     results = []
     best_solution, best_error = None, float('inf')
-    try:
-        for g in guesses:
-            solution = chain.inverse_kinematics(
-                target_xyz, initial_position=g,
-                target_orientation=[0, 0, -1], orientation_mode='Z'
-            )
-            fk = hand_fk(chain, solution)
-            achieved_pos = fk[:3, 3]
-            achieved_z = fk[:3, 2]
-            error = np.linalg.norm(np.array(target_xyz) - achieved_pos)
-            orientation_dot = float(np.dot(achieved_z, desired_z_axis))
-            results.append((solution, error, orientation_dot))
-            if error < best_error:
-                best_error, best_solution = error, solution
-    finally:
-        chain.active_links_mask = original_mask
+    for g in guesses:
+        solution = chain.inverse_kinematics(
+            target_xyz, initial_position=g,
+            target_orientation=[0, 0, -1], orientation_mode='Z'
+        )
+        fk = hand_fk(chain, solution)
+        achieved_pos = fk[:3, 3]
+        achieved_z = fk[:3, 2]
+        error = np.linalg.norm(np.array(target_xyz) - achieved_pos)
+        orientation_dot = float(np.dot(achieved_z, desired_z_axis))
+        results.append((solution, error, orientation_dot))
+        if error < best_error:
+            best_error, best_solution = error, solution
 
     valid_solutions = [sol for sol, err, dot in results
                         if err < IK_ERROR_TOLERANCE and dot > ORIENTATION_DOT_MIN]

@@ -124,13 +124,20 @@
       <pose>1.25 -1.30 0.0 0 0 0</pose>
     </include>
 
-    <!-- Fixed overhead camera on its own stand, centered over the apple row
-         (world x=0..2.25, y=0.00), NOT attached to the robot. horizontal_fov=1.047
-         (60deg) at height 2.5m covers ~2.9m width, apple row plus margin.
-         See CAMERA_WORLD_XYZ in detect_apples.py; must match this pose. -->
+    <!-- Fixed overhead camera on its own stand, NOT attached to the robot.
+         Y moved to 1.0 (the far side of the apple row from the robot, which operates
+         between Y=-0.7 and Y=0.0), since the pole's collision cylinder spans the full
+         height (z=0 to 2.5) and used to sit at Y=0.0, only ~9.5cm from apple_06 in X,
+         squarely inside the arm's sweep while lowering/bending. Confirmed as a real
+         physical collision, not a control issue: shoulder_lift_joint was hitting its
+         150Nm effort limit and still couldn't reach its commanded angle. The camera's
+         downward view will need re-aiming/re-calibrating for this new position before
+         its detection pipeline is actually wired into the pick decision (a separate,
+         not-yet-implemented task); CAMERA_WORLD_XYZ in detect_apples.py must be
+         updated to match whenever that happens. -->
     <model name="overhead_camera_rig">
       <static>true</static>
-      <pose>1.125 0.0 0.0 0 0 0</pose>
+      <pose>1.125 1.0 0.0 0 0 0</pose>
       <link name="stand">
         <visual name="pole_visual">
           <pose>0 0 1.25 0 0 0</pose>

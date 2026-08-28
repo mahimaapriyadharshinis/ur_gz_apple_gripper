@@ -765,7 +765,15 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         self.get_logger().info("Lowering to grasp position...")
         self.send_arm_trajectory(grasp, 2.5)
-        time.sleep(3.0)
+        # Confirmed with real TF data (base_footprint -> dexhand_base_link), not a
+        # guess: the wrist keeps visibly, continuously descending for well over 6
+        # seconds after this trajectory command is sent -- e.g. one capture showed Z
+        # still dropping (0.775 -> 0.760 -> 0.744 -> 0.729 -> 0.714m) more than 5
+        # seconds after [Pre-close check] had already printed, meaning fingers were
+        # closing while the wrist was still mid-descent, well above the apple. The
+        # old 3.0s sleep (barely longer than the 2.5s trajectory itself) never gave
+        # the arm's real, much slower settling dynamics time to finish.
+        time.sleep(9.0)
         rclpy.spin_once(self, timeout_sec=0.5)
         if self.target_pose is not None:
             dx = self.target_pose.position.x - pose.position.x

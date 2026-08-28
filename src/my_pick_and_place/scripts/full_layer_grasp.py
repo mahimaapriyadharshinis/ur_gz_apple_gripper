@@ -635,6 +635,25 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"[SELF-CHECK] Hand will move to WORLD ({world_check_x:.3f}, {world_check_y:.3f}) "
             f"-- compare to apple's world pos above.")
 
+        # Temporary diagnostic: log ikpy's own FK for every named link along the chain
+        # (not just the end effector), in the base_footprint-local frame -- the same
+        # frame `tf2_echo base_footprint <link>` reports. Run tf2_echo on a couple of
+        # these link names (e.g. shoulder_link, wrist_1_link) alongside a test to see
+        # exactly where ikpy's math and the real simulated robot start disagreeing,
+        # rather than only comparing at the far end of the chain.
+        try:
+            frames = self.chain.forward_kinematics(grasp_full_sol, full_kinematics=True)
+            watch_links = ('shoulder_link', 'upper_arm_link', 'forearm_link',
+                            'wrist_1_link', 'wrist_2_link', 'wrist_3_link',
+                            'dexhand_base_link')
+            for link, frame in zip(self.chain.links, frames):
+                if link.name in watch_links:
+                    p = frame[:3, 3]
+                    self.get_logger().info(
+                        f"[FK-per-link] {link.name}: local=({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f})")
+        except Exception as e:
+            self.get_logger().warn(f"[FK-per-link] failed: {e}")
+
         self.get_logger().info("Opening hand, moving to approach position...")
         self.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.0)
         self.send_arm_trajectory(approach, 3.5)

@@ -162,6 +162,21 @@ def build_chain():
         base_elements=[
             'base_footprint', 'base_footprint_joint', 'mobile_base_link',
             'base_joint', 'base_link',
+            # ur_description deliberately inserts a fixed 180deg Z rotation here --
+            # documented in the URDF itself: "frames of the robot/controller have X+
+            # pointing backwards... introduce the necessary rotation over Z (of pi
+            # rad)" -- to align the ROS base_link convention with the UR controller's
+            # own. This base_elements list used to jump straight from 'base_link' to
+            # 'shoulder_pan_joint', skipping this joint entirely; chain.links then
+            # showed no entry for it at all, meaning ikpy built the arm WITHOUT this
+            # rotation while the real robot (via robot_state_publisher, straight from
+            # the same URDF) has it. Every angle solve_ik ever computed for the
+            # shoulder was therefore in a frame rotated 180deg from the real one --
+            # confirmed by an exhaustive set of sweeps (station position, robot yaw,
+            # target height, combined distance+height) all showing the same ~165-172
+            # degree pan offset no matter what was varied, with the "wrong-looking"
+            # solution's elbow/lift values otherwise being the genuinely natural ones.
+            'base_link-base_link_inertia', 'base_link_inertia',
             'shoulder_pan_joint', 'shoulder_link',
             'shoulder_lift_joint', 'upper_arm_link', 'elbow_joint',
             'forearm_link', 'wrist_1_joint', 'wrist_1_link',

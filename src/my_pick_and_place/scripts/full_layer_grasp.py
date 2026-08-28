@@ -829,40 +829,49 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         self.get_logger().info("Lowering to grasp position...")
         grasp_traj_duration = 2.5
-        self.send_arm_trajectory(grasp, grasp_traj_duration)
-        # Confirmed with real TF data (base_footprint -> dexhand_base_link), not a
-        # guess: the wrist keeps visibly moving -- not settling monotonically, but
-        # swinging back and forth -- for well over 6 seconds after this trajectory
-        # command is sent, meaning fingers were closing while the wrist was still
-        # actively in motion, well off from the apple. No fixed sleep duration is
-        # reliable against a real, variable settling time like that, so wait for the
-        # arm's own actual velocity to confirm it has genuinely stopped instead.
-        # min_wait=grasp_traj_duration (not an independent guess) prevents the check
-        # from exiting on stale, pre-motion /joint_states data before the controller
-        # has even started executing this trajectory -- confirmed to happen directly:
-        # [Pre-close check] once fired just 0.045s after this command was sent.
-        settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=20.0,
-                                         min_wait=grasp_traj_duration)
-        if not settled:
-            self.get_logger().warn(
-                "[Lowering] Arm did not settle to near-zero velocity within 15s -- "
-                "proceeding anyway, but the wrist may still be moving.")
+        # [Real joint check] pinpointed a genuine, repeatable steady-state error: only
+        # shoulder_lift_joint lands noticeably off from where it's commanded (e.g.
+        # commanded=13.0 real=-1.5deg, a 14.5deg gap) while every other joint matches
+        # within 0.3deg -- exactly the joint that has to fight gravity to hold the
+        # arm+DexHand up, and no PID gains are defined anywhere to correct for it.
+        # Rather than hardcode a fixed compensation angle (which would only be valid
+        # for this exact pose, not a real fix), close the loop: measure the real
+        # error after settling and re-solve for a corrected target that accounts for
+        # whatever the real discrepancy turns out to be, repeating until it actually
+        # converges or we run out of attempts. This adapts to the real, measured
+        # error regardless of its size or cause, instead of guessing a number.
+        MAX_CORRECTION_ITERS = 3
+        POSITION_TOLERANCE = 0.02
+        current_target = list(grasp_target)
+        real_wrist = None
+        for correction_iter in range(MAX_CORRECTION_ITERS):
+            self.send_arm_trajectory(grasp, grasp_traj_duration)
+            # Confirmed with real TF data (base_footprint -> dexhand_base_link), not
+            # a guess: the wrist keeps visibly moving for well over 6 seconds after
+            # this trajectory command is sent. No fixed sleep duration is reliable
+            # against a real, variable settling time like that, so wait for the
+            # arm's own actual velocity to confirm it has genuinely stopped instead.
+            # min_wait=grasp_traj_duration (not an independent guess) prevents the
+            # check from exiting on stale, pre-motion /joint_states data before the
+            # controller has even started executing this trajectory -- confirmed to
+            # happen directly: [Pre-close check] once fired just 0.045s after send.
+            settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=20.0,
+                                             min_wait=grasp_traj_duration)
+            if not settled:
+                self.get_logger().warn(
+                    "[Lowering] Arm did not settle to near-zero velocity within 20s -- "
+                    "proceeding anyway, but the wrist may still be moving.")
 
-        real_wrist = self.real_wrist_position()
-        if real_wrist is not None:
+            real_wrist = self.real_wrist_position()
+            if real_wrist is None:
+                break
             rwx, rwy, rwz = real_wrist
             werr = ((rwx - grasp_target[0]) ** 2 + (rwy - grasp_target[1]) ** 2
                     + (rwz - grasp_target[2]) ** 2) ** 0.5
             self.get_logger().info(
-                f"[Real wrist check] intended=({grasp_target[0]:.3f}, {grasp_target[1]:.3f}, "
-                f"{grasp_target[2]:.3f}) real=({rwx:.3f}, {rwy:.3f}, {rwz:.3f}) "
-                f"error={werr:.3f}m")
-            # If this position error persists despite the arm reporting near-zero
-            # velocity (i.e. "settled"), the next question is whether it settled AT
-            # the commanded joint angles or sagged under the DexHand's real weight to
-            # a different stable pose under gravity -- a genuine steady-state control
-            # error, not a targeting bug. Logging real vs commanded per joint answers
-            # that directly instead of requiring another manual /joint_states check.
+                f"[Real wrist check #{correction_iter}] intended=({grasp_target[0]:.3f}, "
+                f"{grasp_target[1]:.3f}, {grasp_target[2]:.3f}) real=({rwx:.3f}, {rwy:.3f}, "
+                f"{rwz:.3f}) error={werr:.3f}m")
             real_vs_commanded = []
             for jname, commanded_val in zip(ARM_JOINTS, grasp):
                 real_val = self.latest_joint_state.get(jname, (None, None, None))[0]
@@ -871,6 +880,24 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                         f"{jname}: commanded={np.degrees(commanded_val):.1f} "
                         f"real={np.degrees(real_val):.1f} deg")
             self.get_logger().info("[Real joint check] " + " | ".join(real_vs_commanded))
+
+            if werr < POSITION_TOLERANCE:
+                break
+            if correction_iter == MAX_CORRECTION_ITERS - 1:
+                break
+
+            error_vec = [grasp_target[i] - real_wrist[i] for i in range(3)]
+            current_target = [current_target[i] + error_vec[i] for i in range(3)]
+            corrected_result = solve_ik(self.chain, current_target)
+            if corrected_result is None:
+                self.get_logger().warn(
+                    f"[Correction] corrected target {current_target} UNREACHABLE -- "
+                    f"keeping previous commanded joints.")
+                break
+            grasp, grasp_full_sol = corrected_result
+            self.get_logger().info(
+                f"[Correction] re-solving for corrected target ({current_target[0]:.3f}, "
+                f"{current_target[1]:.3f}, {current_target[2]:.3f})")
 
         rclpy.spin_once(self, timeout_sec=0.5)
         if self.target_pose is not None:

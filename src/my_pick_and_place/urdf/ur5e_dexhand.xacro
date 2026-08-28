@@ -36,11 +36,19 @@
     </inertial>
   </link>
 
-  <!-- MOVED ROBOT BESIDE APPLES (X=0.8m, Y=-0.8m) AND ROTATED 90 DEGREES (Yaw=1.5708) -->
+  <!-- Positioning is done dynamically at runtime by teleporting base_footprint (see
+       teleport() / DELIVERY_ROBOT_X/Y/YAW in full_layer_grasp.py). This joint must
+       stay at zero offset, or the real arm mount silently drifts away from wherever
+       the Python math thinks the robot is. It used to carry a hardcoded (1.375, -0.55,
+       +90deg) offset from before teleport-based positioning existed; that stale offset
+       was never accounted for anywhere in world_to_local()/solve_ik(), which is why
+       the arm kept reaching from the "wrong side" no matter what station or IK
+       heuristic was tried: the self-checks were all internally consistent with the
+       wrong physical frame.-->
   <joint name="base_footprint_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="mobile_base_link"/>
-    <origin xyz="1.375 -0.55 0.0" rpy="0 0 1.5708"/>
+    <origin xyz="0 0 0.0" rpy="0 0 0"/>
   </joint>
 
   <!-- Drive Wheels -->

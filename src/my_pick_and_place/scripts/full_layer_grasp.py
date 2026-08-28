@@ -454,7 +454,7 @@ class FullLayerGraspNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         return check_fn()
 
-    def wait_for_settled(self, joint_names, vel_threshold=0.02, timeout=15.0):
+    def wait_for_settled(self, joint_names, vel_threshold=0.02, timeout=15.0, min_wait=0.0):
         """Block until every named joint's real velocity is near zero, instead of
         guessing a fixed sleep duration. Real TF data showed the wrist still visibly
         moving (and not monotonically -- swinging back and forth) more than 6 seconds
@@ -465,8 +465,20 @@ class FullLayerGraspNode(Node):
         stock end effector it was probably tuned for. Polling real velocity is safe
         (pure Python, no risk to the working robot config) and correct regardless of
         how long the real settling time actually turns out to be.
+
+        min_wait exists because a bare velocity check has a real failure mode: called
+        right after publishing a new trajectory, the controller hasn't necessarily
+        started moving yet, so /joint_states can still be reporting the PREVIOUS
+        (already-settled) position's near-zero velocity -- causing an immediate,
+        false "already settled" return before the arm has moved at all. Confirmed
+        directly: [Pre-close check] once fired just 0.045s after the lowering
+        command, meaning the fingers closed at the old approach height, never having
+        descended. min_wait should be set to at least the commanded trajectory
+        duration, so the check can't exit before the arm has had a chance to move.
         """
         start = time.time()
+        while rclpy.ok() and (time.time() - start) < min_wait:
+            rclpy.spin_once(self, timeout_sec=0.1)
         last_max_vel = None
         while rclpy.ok() and (time.time() - start) < timeout:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -792,7 +804,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         time.sleep(4.0)
 
         self.get_logger().info("Lowering to grasp position...")
-        self.send_arm_trajectory(grasp, 2.5)
+        grasp_traj_duration = 2.5
+        self.send_arm_trajectory(grasp, grasp_traj_duration)
         # Confirmed with real TF data (base_footprint -> dexhand_base_link), not a
         # guess: the wrist keeps visibly moving -- not settling monotonically, but
         # swinging back and forth -- for well over 6 seconds after this trajectory
@@ -800,7 +813,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         # actively in motion, well off from the apple. No fixed sleep duration is
         # reliable against a real, variable settling time like that, so wait for the
         # arm's own actual velocity to confirm it has genuinely stopped instead.
-        settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=20.0)
+        # min_wait=grasp_traj_duration (not an independent guess) prevents the check
+        # from exiting on stale, pre-motion /joint_states data before the controller
+        # has even started executing this trajectory -- confirmed to happen directly:
+        # [Pre-close check] once fired just 0.045s after this command was sent.
+        settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=20.0,
+                                         min_wait=grasp_traj_duration)
         if not settled:
             self.get_logger().warn(
                 "[Lowering] Arm did not settle to near-zero velocity within 15s -- "

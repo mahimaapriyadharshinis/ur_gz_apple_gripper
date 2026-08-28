@@ -11,7 +11,7 @@ import numpy as np
 from full_layer_grasp import build_chain, solve_ik, world_to_local, ARM_JOINTS
 
 APPLE_WORLD_XY = (1.25, 0.0)
-APPLE_WORLD_Z = 0.04
+APPLE_WORLD_Z = 0.44  # apple_table top (0.40) + apple radius (0.04)
 FINGER_LENGTH = 0.164  # must match full_layer_grasp.py's FINGER_LENGTH
 
 

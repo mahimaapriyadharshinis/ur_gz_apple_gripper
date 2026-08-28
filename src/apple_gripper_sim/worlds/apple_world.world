@@ -40,55 +40,79 @@
   	<uri>https://fuel.gazebosim.org/1.0/openrobotics/models/Ground Plane</uri>
     </include>
     
+    <!-- Table the apple row sits on. Raises apples from ground level (which required
+         an extreme, always-twisted arm reach; confirmed via a 70-position sweep, not
+         fixable by repositioning) to a more natural working height. Top surface at
+         z=0.40; apples spawn 0.01m above it, matching how they sat 0.01m above the
+         ground before. Length covers the full 0..2.25 row with margin. -->
+    <model name="apple_table">
+      <static>true</static>
+      <pose>1.125 0.0 0.0 0 0 0</pose>
+      <link name="top">
+        <collision name="top_collision">
+          <pose>0 0 0.20 0 0 0</pose>
+          <geometry><box><size>2.60 0.50 0.40</size></box></geometry>
+        </collision>
+        <visual name="top_visual">
+          <pose>0 0 0.20 0 0 0</pose>
+          <geometry><box><size>2.60 0.50 0.40</size></box></geometry>
+          <material>
+            <ambient>0.55 0.42 0.30 1</ambient>
+            <diffuse>0.55 0.42 0.30 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
     <include>
       <uri>model://apple_01</uri>
       <name>apple_01</name>
-      <pose>0.00 0.00 0.05 0 0 0</pose>
+      <pose>0.00 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_02</uri>
       <name>apple_02</name>
-      <pose>0.25 0.00 0.05 0 0 0</pose>
+      <pose>0.25 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_03</uri>
       <name>apple_03</name>
-      <pose>0.50 0.00 0.05 0 0 0</pose>
+      <pose>0.50 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_04</uri>
       <name>apple_04</name>
-      <pose>0.75 0.00 0.05 0 0 0</pose>
+      <pose>0.75 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_05</uri>
       <name>apple_05</name>
-      <pose>1.00 0.00 0.05 0 0 0</pose>
+      <pose>1.00 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_06</uri>
       <name>apple_06</name>
-      <pose>1.25 0.00 0.05 0 0 0</pose>
+      <pose>1.25 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_07</uri>
       <name>apple_07</name>
-      <pose>1.50 0.00 0.05 0 0 0</pose>
+      <pose>1.50 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_08</uri>
       <name>apple_08</name>
-      <pose>1.75 0.00 0.05 0 0 0</pose>
+      <pose>1.75 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_09</uri>
       <name>apple_09</name>
-      <pose>2.00 0.00 0.05 0 0 0</pose>
+      <pose>2.00 0.00 0.45 0 0 0</pose>
     </include>
     <include>
       <uri>model://apple_10</uri>
       <name>apple_10</name>
-      <pose>2.25 0.00 0.05 0 0 0</pose>
+      <pose>2.25 0.00 0.45 0 0 0</pose>
     </include>
 
     <!-- Collection crate at the delivery station's place target. Position must stay in

@@ -32,7 +32,7 @@ APPLE_NAMES = [f"apple_{i:02d}" for i in range(1, 11)]
 # apart along x at y=0.00. Used only to PLAN which station reaches which apple; the
 # actual grasp always targets the live /model/<name>/pose, never this snapshot.
 APPLE_WORLD_XY = {name: (0.25 * i, 0.00) for i, name in enumerate(APPLE_NAMES)}
-APPLE_WORLD_Z = 0.05
+APPLE_WORLD_Z = 0.44  # apple_table top (0.40) + apple radius (0.04)
 
 STATION_Y = DELIVERY_ROBOT_Y
 STATION_YAW = DELIVERY_ROBOT_YAW

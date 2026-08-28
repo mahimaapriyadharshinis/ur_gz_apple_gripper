@@ -31,7 +31,7 @@ CAMERA_WORLD_XYZ = (1.125, 0.0, 2.5)
 CAMERA_HORIZONTAL_FOV = 1.047  # radians, must match the <horizontal_fov> in the world file
 IMAGE_WIDTH = 800
 IMAGE_HEIGHT = 600
-GROUND_Z = 0.04  # apple center height -- ground_dist = camera_z - this
+GROUND_Z = 0.44  # apple center height (apple_table top 0.40 + radius 0.04)
 
 # HSV thresholds for "reddish apple" -- red wraps around hue 0/180 in OpenCV, so
 # two ranges are combined. Calibrated against the real sim: the original tight

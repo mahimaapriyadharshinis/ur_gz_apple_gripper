@@ -301,6 +301,25 @@ def solve_ik(chain, target_xyz, init=None):
         valid_solutions = [sol for sol, err, dot in results
                             if err < IK_FALLBACK_ERROR_CEILING and dot > ORIENTATION_DOT_MIN_LOOSE]
 
+    # ikpy has no concept of collisions -- joint limits here are +-2*pi (URDF), wide
+    # enough that a mathematically valid solution can still swing an arm joint more
+    # than a full 180 degrees past center, physically sweeping it through the robot's
+    # own body to get there. Confirmed with real data: commanded shoulder_lift=-193deg
+    # was NEVER reached -- /joint_states showed it stuck at -213deg with 71Nm of
+    # torque (every other joint was <1Nm), while every OTHER commanded joint matched
+    # its real encoder value almost exactly. That's a physical collision, not a math
+    # error, and it's why the wrist ended up somewhere ikpy never predicted. Preferring
+    # solutions that stay within a normal +-180deg swing per joint avoids configurations
+    # that require passing through the robot's own body, without a hard requirement
+    # (fall back to the unfiltered set if nothing normal-range is available).
+    def within_normal_swing(sol):
+        return all(abs(a) <= np.pi + 1e-6
+                   for link, a in zip(chain.links, sol) if link.name in ARM_JOINTS)
+
+    normal_swing_solutions = [sol for sol in valid_solutions if within_normal_swing(sol)]
+    if normal_swing_solutions:
+        valid_solutions = normal_swing_solutions
+
     if not valid_solutions:
         # Nothing hit position+orientation together -- fall back to the closest
         # solution by position alone, as long as it's not wildly off, rather than

@@ -157,6 +157,10 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # GZ nodes
+    # Spawn directly at the pick-and-place station instead of the origin, so the
+    # robot never visibly "jumps" when full_layer_grasp.py's reset_everything()
+    # teleports it there -- it's already there from the start. Must stay in sync
+    # with DELIVERY_ROBOT_X/Y/YAW in my_pick_and_place/scripts/full_layer_grasp.py.
     gz_spawn_entity = Node(
         package="ros_gz_sim",
         executable="create",
@@ -168,6 +172,14 @@ def launch_setup(context, *args, **kwargs):
             "ur",
             "-allow_renaming",
             "true",
+            "-x",
+            "1.40",
+            "-y",
+            "-0.90",
+            "-z",
+            "0.0",
+            "-Y",
+            "1.5708",
         ],
     )
     gz_launch_description_with_gui = IncludeLaunchDescription(

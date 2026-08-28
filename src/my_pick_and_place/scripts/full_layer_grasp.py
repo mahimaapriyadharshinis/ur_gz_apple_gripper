@@ -576,7 +576,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         FINGER_LENGTH = 0.164
         grasp_z = z_center + FINGER_LENGTH
 
-        approach_target = [x, y, grasp_z + 0.15]
+        # 0.15m hover was untested reach margin, not a real requirement -- the grasp
+        # point itself solves with ~0 error at this station (see find_station.py), but
+        # adding 0.15m of extra height pushed the wrist just past real reach (0.059m
+        # error vs 0.05m fallback ceiling). 0.08m still clears the apple (radius
+        # ~0.04m) by a comfortable margin before descending, well inside reach.
+        approach_target = [x, y, grasp_z + 0.08]
         grasp_target = [x, y, grasp_z]
 
         approach_result = solve_ik(self.chain, approach_target)

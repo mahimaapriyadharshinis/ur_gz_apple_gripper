@@ -12,13 +12,12 @@ from full_layer_grasp import build_chain, solve_ik, world_to_local, ARM_JOINTS
 
 APPLE_WORLD_XY = (1.25, 0.0)
 APPLE_WORLD_Z = 0.04
-APPLE_RADIUS = 0.04
+FINGER_LENGTH = 0.164  # must match full_layer_grasp.py's FINGER_LENGTH
 
 
 def pan_mismatch_deg(chain, robot_x, robot_y, robot_yaw):
     x, y = world_to_local(APPLE_WORLD_XY[0], APPLE_WORLD_XY[1], robot_x, robot_y, robot_yaw)
-    z_top = APPLE_WORLD_Z + APPLE_RADIUS
-    grasp_target = [x, y, z_top + 0.01]
+    grasp_target = [x, y, APPLE_WORLD_Z + FINGER_LENGTH]
 
     expected_pan = np.degrees(np.arctan2(y, x))
     result = solve_ik(chain, grasp_target)

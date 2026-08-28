@@ -536,16 +536,22 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"[Coordinate fix] World pos ({pose.position.x:.3f}, {pose.position.y:.3f}) "
             f"-> Robot-frame pos ({x:.3f}, {y:.3f})")
 
-        # Apple collision sphere radius is 0.04m (see apple_gripper_sim model.sdf files).
-        # The old "z_top = z_center + 0.02" undershot the real top by 2cm and put the
-        # grasp target at the apple's CENTER -- a genuinely hard reach (wrist buried at
-        # ground level) that's also not how grasping actually works: the wrist hovers
-        # just above the object while fingers curl down/around it, not at its center.
-        apple_radius = 0.04
-        z_top = z_center + apple_radius
+        # Confirmed via the mesh itself (Index_Tip_1's visual origin z = -0.163947 in
+        # dexhandv2_right.urdf): fingers are ~0.164m long from the wrist
+        # (dexhand_base_link) to fingertip. The previous grasp height (apple top + 1cm)
+        # put the wrist only ~9cm above the ground -- an open, straight finger from
+        # there reaches ~7cm BELOW the floor, physically impossible, so fingers were
+        # resting on the ground before closing even started (confirmed: user reported
+        # fingers touching the ground, and R_Middle spiking to 33Nm during lift,
+        # consistent with a finger wedged against something immovable). Positioning
+        # the wrist so an open, straight fingertip lands at the apple's own center
+        # height gives the closing/curling motion room to actually wrap the object
+        # instead of bottoming out on the floor first.
+        FINGER_LENGTH = 0.164
+        grasp_z = z_center + FINGER_LENGTH
 
-        approach_target = [x, y, z_top + 0.15]
-        grasp_target = [x, y, z_top + 0.01]
+        approach_target = [x, y, grasp_z + 0.15]
+        grasp_target = [x, y, grasp_z]
 
         approach_result = solve_ik(self.chain, approach_target)
         if approach_result is None:

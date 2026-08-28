@@ -439,8 +439,8 @@ class FullLayerGraspNode(Node):
         self.target_pose = msg
 
     def _joint_cb(self, msg):
-        for name, pos, eff in zip(msg.name, msg.position, msg.effort):
-            self.latest_joint_state[name] = (pos, eff)
+        for name, pos, vel, eff in zip(msg.name, msg.position, msg.velocity, msg.effort):
+            self.latest_joint_state[name] = (pos, vel, eff)
 
     def _camera_cb(self, msg):
         try:
@@ -453,6 +453,26 @@ class FullLayerGraspNode(Node):
         while rclpy.ok() and not check_fn() and (time.time() - start) < timeout:
             rclpy.spin_once(self, timeout_sec=0.1)
         return check_fn()
+
+    def wait_for_settled(self, joint_names, vel_threshold=0.02, timeout=15.0):
+        """Block until every named joint's real velocity is near zero, instead of
+        guessing a fixed sleep duration. Real TF data showed the wrist still visibly
+        moving (and not monotonically -- swinging back and forth) more than 6 seconds
+        after the "lowering" trajectory command was sent, well past any fixed sleep
+        we'd tried. No PID gains are defined anywhere for these joints, so Gazebo's
+        ros2_control plugin is running on its own internal default -- likely
+        under-tuned for the extra mass the DexHand adds at the wrist compared to the
+        stock end effector it was probably tuned for. Polling real velocity is safe
+        (pure Python, no risk to the working robot config) and correct regardless of
+        how long the real settling time actually turns out to be.
+        """
+        start = time.time()
+        while rclpy.ok() and (time.time() - start) < timeout:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            velocities = [abs(self.latest_joint_state.get(name, (0, 0, 0))[1]) for name in joint_names]
+            if velocities and max(velocities) < vel_threshold:
+                return True
+        return False
 
     def teleport(self, x, y, yaw):
         qz = float(np.sin(yaw / 2.0))
@@ -580,8 +600,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
             for g in FINGER_GROUPS:
                 name = f"{g}_Pitch"
-                pos = self.latest_joint_state.get(name, (0, 0))[0]
-                effort = abs(self.latest_joint_state.get(name, (0, 0))[1])
+                pos = self.latest_joint_state.get(name, (0, 0, 0))[0]
+                effort = abs(self.latest_joint_state.get(name, (0, 0, 0))[2])
                 max_effort_seen[g] = max(max_effort_seen[g], effort)
                 if effort > contact_threshold and not contacted[g]:
                     contacted[g] = True
@@ -610,7 +630,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             rclpy.spin_once(self, timeout_sec=0.2)
             for g in FINGER_GROUPS:
                 name = f"{g}_Pitch"
-                effort = abs(self.latest_joint_state.get(name, (0, 0))[1])
+                effort = abs(self.latest_joint_state.get(name, (0, 0, 0))[2])
                 if effort > EFFORT_DANGER_THRESHOLD:
                     self.get_logger().warn(
                         f"[Layer 6] DANGER: {g} effort={effort:.3f}Nm -- opening hand and aborting hold.")
@@ -766,14 +786,17 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         self.get_logger().info("Lowering to grasp position...")
         self.send_arm_trajectory(grasp, 2.5)
         # Confirmed with real TF data (base_footprint -> dexhand_base_link), not a
-        # guess: the wrist keeps visibly, continuously descending for well over 6
-        # seconds after this trajectory command is sent -- e.g. one capture showed Z
-        # still dropping (0.775 -> 0.760 -> 0.744 -> 0.729 -> 0.714m) more than 5
-        # seconds after [Pre-close check] had already printed, meaning fingers were
-        # closing while the wrist was still mid-descent, well above the apple. The
-        # old 3.0s sleep (barely longer than the 2.5s trajectory itself) never gave
-        # the arm's real, much slower settling dynamics time to finish.
-        time.sleep(9.0)
+        # guess: the wrist keeps visibly moving -- not settling monotonically, but
+        # swinging back and forth -- for well over 6 seconds after this trajectory
+        # command is sent, meaning fingers were closing while the wrist was still
+        # actively in motion, well off from the apple. No fixed sleep duration is
+        # reliable against a real, variable settling time like that, so wait for the
+        # arm's own actual velocity to confirm it has genuinely stopped instead.
+        settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.02, timeout=15.0)
+        if not settled:
+            self.get_logger().warn(
+                "[Lowering] Arm did not settle to near-zero velocity within 15s -- "
+                "proceeding anyway, but the wrist may still be moving.")
         rclpy.spin_once(self, timeout_sec=0.5)
         if self.target_pose is not None:
             dx = self.target_pose.position.x - pose.position.x

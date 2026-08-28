@@ -47,14 +47,17 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
-# find_station.py's sweep after apples moved onto the table (grasp height ~0.60m)
-# found this as the best of 70: 45.5 degrees mismatch -- WORSE than the 35.6 degrees
-# found at ground level. That's an important data point: the shoulder-pan mismatch
-# doesn't track reach height at all, so it's very unlikely to be a real predictor of
-# grasp success. Every self-check throughout this project has confirmed the wrist
-# reaches the exact correct position regardless of this number -- stop treating it as
-# a problem to solve, and judge success only by actual finger contact/force from now on.
-DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.30, -0.90
+# ur5e_dexhand.xacro's base_footprint_joint used to carry a hardcoded (1.375, -0.55,
+# +90deg) offset between base_footprint (what teleport() moves) and the real arm
+# mount -- meaning every station value tuned before that was fixed was tuned against
+# a phantom frame, not the real one. Now that it's removed, solve_ik's shoulder-pan
+# lock (see solve_ik()) makes the mismatch a genuine, trustworthy reachability signal:
+# 0.0 degrees = solved with the arm actually facing the target; UNREACHABLE = out of
+# real reach. find_station.py's sweep against apple_06 (world 1.25, 0.00, grasp
+# height 0.604) found this fully reachable with 0.0 degree mismatch and enough margin
+# to also clear the +0.15m approach hover height, while staying far enough from the
+# table edge (0.6x0.8m rotated base footprint) not to collide with it.
+DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.25, -0.70
 DELIVERY_ROBOT_YAW = 1.5708
 # Place target in the delivery station's local (base_footprint-relative) frame --
 # same frame/convention as apple grasp targets, deliberately on the opposite side

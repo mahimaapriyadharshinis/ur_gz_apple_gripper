@@ -164,19 +164,41 @@ def solve_ik(chain, target_xyz, init=None):
                 g[i] = preset[link.name]
         guesses.append(g)
 
+    # Lock shoulder_pan_joint out of the optimization instead of just seeding it at
+    # expected_pan. Seeding alone never worked -- the optimizer was still free to
+    # rotate pan away during its search, and it kept sliding into a "mirror" basin
+    # (same wrist position, shoulder ~180deg to the other side, elbow bent backward)
+    # regardless of which preset it started from. With pan held fixed, the remaining
+    # 5 joints (>=4 needed for xyz + 1-axis orientation) still have a full degree of
+    # freedom to spare, so a natural elbow-up reach stays solvable -- but a mirror
+    # configuration is now mathematically unreachable, not just deprioritized.
+    pan_index = None
+    for i, link in enumerate(chain.links):
+        if link.name == 'shoulder_pan_joint':
+            pan_index = i
+            break
+    original_mask = list(chain.active_links_mask)
+    if pan_index is not None:
+        chain.active_links_mask[pan_index] = False
+        for g in guesses:
+            g[pan_index] = expected_pan
+
     valid_solutions = []
     best_solution, best_error = None, float('inf')
-    for g in guesses:
-        solution = chain.inverse_kinematics(
-            target_xyz, initial_position=g,
-            target_orientation=[0, 0, -1], orientation_mode='Z'
-        )
-        achieved = chain.forward_kinematics(solution)[:3, 3]
-        error = np.linalg.norm(np.array(target_xyz) - achieved)
-        if error < best_error:
-            best_error, best_solution = error, solution
-        if error < IK_ERROR_TOLERANCE:
-            valid_solutions.append(solution)
+    try:
+        for g in guesses:
+            solution = chain.inverse_kinematics(
+                target_xyz, initial_position=g,
+                target_orientation=[0, 0, -1], orientation_mode='Z'
+            )
+            achieved = chain.forward_kinematics(solution)[:3, 3]
+            error = np.linalg.norm(np.array(target_xyz) - achieved)
+            if error < best_error:
+                best_error, best_solution = error, solution
+            if error < IK_ERROR_TOLERANCE:
+                valid_solutions.append(solution)
+    finally:
+        chain.active_links_mask = original_mask
 
     if not valid_solutions:
         # Nothing hit the normal tolerance -- fall back to the closest solution found,

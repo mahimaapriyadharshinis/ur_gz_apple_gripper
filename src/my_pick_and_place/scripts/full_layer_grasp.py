@@ -21,6 +21,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from cv_bridge import CvBridge
 import ikpy.chain
 import sys
+import tf2_ros
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "qwen2.5vl:3b"
@@ -424,6 +425,29 @@ class FullLayerGraspNode(Node):
         self.latest_joint_state = {}
         self.latest_frame = None
 
+        # Real ground-truth position checks, done BY THE SCRIPT ITSELF rather than a
+        # human manually timing a second tf2_echo terminal against the log -- that
+        # approach kept producing mistimed readings (catching the approach position,
+        # or pre-motion stale data, instead of the true settled grasp position) no
+        # matter how carefully the timing instructions were followed. A direct lookup
+        # right when the code itself knows the arm has settled has no such ambiguity.
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+    def real_wrist_position(self, timeout_sec=1.0):
+        """Look up dexhand_base_link's REAL position relative to base_footprint,
+        straight from TF -- the same ground truth `tf2_echo` reports, but queried at
+        the exact right moment instead of guessed by a human watching two terminals."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                'base_footprint', 'dexhand_base_link', rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=timeout_sec))
+            p = t.transform.translation
+            return (p.x, p.y, p.z)
+        except Exception as e:
+            self.get_logger().warn(f"[real_wrist_position] TF lookup failed: {e}")
+            return None
+
     def set_target(self, target_name):
         if self.pose_sub is not None:
             self.destroy_subscription(self.pose_sub)
@@ -823,6 +847,17 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             self.get_logger().warn(
                 "[Lowering] Arm did not settle to near-zero velocity within 15s -- "
                 "proceeding anyway, but the wrist may still be moving.")
+
+        real_wrist = self.real_wrist_position()
+        if real_wrist is not None:
+            rwx, rwy, rwz = real_wrist
+            werr = ((rwx - grasp_target[0]) ** 2 + (rwy - grasp_target[1]) ** 2
+                    + (rwz - grasp_target[2]) ** 2) ** 0.5
+            self.get_logger().info(
+                f"[Real wrist check] intended=({grasp_target[0]:.3f}, {grasp_target[1]:.3f}, "
+                f"{grasp_target[2]:.3f}) real=({rwx:.3f}, {rwy:.3f}, {rwz:.3f}) "
+                f"error={werr:.3f}m")
+
         rclpy.spin_once(self, timeout_sec=0.5)
         if self.target_pose is not None:
             dx = self.target_pose.position.x - pose.position.x

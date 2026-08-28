@@ -47,13 +47,14 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
-# find_station.py swept 70 candidate (X, Y) combinations and computed the REAL
-# shoulder-pan mismatch for each via solve_ik (not a guess) -- confirmed that no
-# station gets close to a "natural" (near-zero mismatch) reach for apple_06's low
-# grasp height; the best of all 70 was still 35.6 degrees off. This is the best one
-# found: (1.40, -0.90). The twisted arm shape is an inherent characteristic of
-# reaching this low with the hand pointed straight down, not a station-placement bug.
-DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.40, -0.90
+# find_station.py's sweep after apples moved onto the table (grasp height ~0.60m)
+# found this as the best of 70: 45.5 degrees mismatch -- WORSE than the 35.6 degrees
+# found at ground level. That's an important data point: the shoulder-pan mismatch
+# doesn't track reach height at all, so it's very unlikely to be a real predictor of
+# grasp success. Every self-check throughout this project has confirmed the wrist
+# reaches the exact correct position regardless of this number -- stop treating it as
+# a problem to solve, and judge success only by actual finger contact/force from now on.
+DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y = 1.30, -0.90
 DELIVERY_ROBOT_YAW = 1.5708
 # Place target in the delivery station's local (base_footprint-relative) frame --
 # same frame/convention as apple grasp targets, deliberately on the opposite side

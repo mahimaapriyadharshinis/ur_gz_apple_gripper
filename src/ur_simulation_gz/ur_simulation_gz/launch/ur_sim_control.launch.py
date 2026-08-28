@@ -173,7 +173,7 @@ def launch_setup(context, *args, **kwargs):
             "-allow_renaming",
             "true",
             "-x",
-            "1.40",
+            "1.30",
             "-y",
             "-0.90",
             "-z",

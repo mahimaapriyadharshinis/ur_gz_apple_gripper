@@ -189,29 +189,27 @@ IK_FALLBACK_ERROR_CEILING = 0.05
 # Flipping to test the opposite sign.
 HAND_FACING_SIGN = -1
 
-# ikpy names each chain entry after the JOINT before it, not the resulting link, and
-# a Chain built from a branching URDF keeps walking past the intended end effector
-# into whichever branch comes first in the file -- confirmed by dumping chain.links:
-# after 'tool0_to_dexhand' (the wrist mount, zero-offset from dexhand_base_link) the
-# chain continues straight into the thumb (R_Thumb_Yaw, R_Thumb_Roll, ...), ending at
-# the thumb TIP, ~13cm away and rotated onto the thumb's own skewed mounting axis.
-# chain.forward_kinematics(sol)[:3, 3] (ikpy's default "last link") was therefore
-# aiming the thumb tip at the target and pointing the THUMB'S axis down, not the
-# wrist's -- forcing the solver into contorted arm shapes to satisfy an orientation
-# constraint on the wrong frame, while the self-check (same wrong frame) still looked
-# correct. Reading FK at 'tool0_to_dexhand' specifically gives the real wrist pose.
+# build_chain() now loads a pruned URDF (see _write_arm_only_urdf) where
+# dexhand_base_link/'tool0_to_dexhand' is a true leaf with nothing mounted on it --
+# confirmed by dumping chain.links, which now ends at index 11: 'tool0_to_dexhand'.
+# That makes ikpy's own default forward_kinematics() (the plain last-link result,
+# with no full_kinematics search) already the correct wrist pose, and -- critically
+# -- the exact same frame chain.inverse_kinematics() targets internally, so the
+# solver and this check are now guaranteed consistent. An earlier version of this
+# function used full_kinematics=True to hunt down the wrist by name as a workaround
+# for the old branching (unpruned) chain; keeping that after pruning turned out to
+# be worse than just deleting it -- it produced a flat, distance-independent ~0.13m
+# error on every single station in a reachability sweep (a hallmark of reading a
+# misaligned/wrong frame, not a real reach limit), which went away entirely once
+# reverted to plain forward_kinematics().
 HAND_JOINT_NAME = 'tool0_to_dexhand'
 
 
 def hand_fk(chain, solution):
-    """Forward kinematics of the actual wrist/palm mount point (see HAND_JOINT_NAME
-    comment above) -- NOT chain.forward_kinematics()'s default last-link result,
-    which is a thumb-tip pose on this branching DexHand URDF."""
-    frames = chain.forward_kinematics(solution, full_kinematics=True)
-    for link, frame in zip(chain.links, frames):
-        if link.name == HAND_JOINT_NAME:
-            return frame
-    raise ValueError(f"'{HAND_JOINT_NAME}' not found in chain -- URDF structure changed?")
+    """Forward kinematics of the actual wrist/palm mount point -- see HAND_JOINT_NAME
+    comment above for why this is now just a thin, explicit wrapper around ikpy's own
+    default forward_kinematics() rather than a full_kinematics()-based name search."""
+    return chain.forward_kinematics(solution)
 
 
 def solve_ik(chain, target_xyz, init=None):

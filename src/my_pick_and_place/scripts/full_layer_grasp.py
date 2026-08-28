@@ -857,6 +857,20 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 f"[Real wrist check] intended=({grasp_target[0]:.3f}, {grasp_target[1]:.3f}, "
                 f"{grasp_target[2]:.3f}) real=({rwx:.3f}, {rwy:.3f}, {rwz:.3f}) "
                 f"error={werr:.3f}m")
+            # If this position error persists despite the arm reporting near-zero
+            # velocity (i.e. "settled"), the next question is whether it settled AT
+            # the commanded joint angles or sagged under the DexHand's real weight to
+            # a different stable pose under gravity -- a genuine steady-state control
+            # error, not a targeting bug. Logging real vs commanded per joint answers
+            # that directly instead of requiring another manual /joint_states check.
+            real_vs_commanded = []
+            for jname, commanded_val in zip(ARM_JOINTS, grasp):
+                real_val = self.latest_joint_state.get(jname, (None, None, None))[0]
+                if real_val is not None:
+                    real_vs_commanded.append(
+                        f"{jname}: commanded={np.degrees(commanded_val):.1f} "
+                        f"real={np.degrees(real_val):.1f} deg")
+            self.get_logger().info("[Real joint check] " + " | ".join(real_vs_commanded))
 
         rclpy.spin_once(self, timeout_sec=0.5)
         if self.target_pose is not None:

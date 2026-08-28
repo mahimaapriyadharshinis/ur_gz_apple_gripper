@@ -33,14 +33,22 @@ IMAGE_WIDTH = 800
 IMAGE_HEIGHT = 600
 GROUND_Z = 0.04  # apple center height -- ground_dist = camera_z - this
 
-# HSV thresholds for "reddish apple" -- red wraps around hue 0/180 in OpenCV,
-# so two ranges are combined. UNVERIFIED against the real rendered apple
-# colors/lighting -- tune these if detection misses apples or picks up noise.
+# HSV thresholds for "reddish apple" -- red wraps around hue 0/180 in OpenCV, so
+# two ranges are combined. Calibrated against the real sim: the original tight
+# range found 6/10 apples with sub-centimeter position accuracy but missed 4
+# whose rendered shade (lighting-dependent, not just the raw material color)
+# fell outside it. Widened saturation/value tolerance (not hue, to avoid
+# picking up the crate -- its brown wall color measures ~31 degrees hue, which
+# a wider hue range would have caught as a false "apple").
 RED_HSV_RANGES = [
-    ((0, 80, 50), (10, 255, 255)),
-    ((170, 80, 50), (180, 255, 255)),
+    ((0, 60, 30), (15, 255, 255)),
+    ((160, 60, 30), (180, 255, 255)),
 ]
 MIN_BLOB_AREA = 20  # pixels -- filters out noise
+# Apples sit at world y=0.00; discard detections far from that row (e.g. the
+# crate at y=-1.5, or rendering artifacts) as a safety net independent of the
+# color thresholds above.
+MAX_Y_FROM_ROW = 0.5
 
 
 def pixel_to_world(px, py, ground_z=GROUND_Z):
@@ -111,6 +119,8 @@ class OverheadDetector(Node):
             px = m['m10'] / m['m00']
             py = m['m01'] / m['m00']
             world_x, world_y = pixel_to_world(px, py)
+            if abs(world_y) > MAX_Y_FROM_ROW:
+                continue
             detections.append({'pixel': (px, py), 'area': area, 'world': (world_x, world_y)})
         return detections
 

@@ -826,6 +826,22 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             self.get_logger().error(f"No live pose for {target_name} -- aborting.")
             return {"target": target_name, "success": False, "reason": "no_live_pose"}
 
+        # A hand-bumped apple can occasionally get a bad physics impulse and end up
+        # flung far from the table (confirmed directly: one seen at world (15.9,
+        # -74.0), tens of meters away) rather than just nudged a few cm. Running IK
+        # against that wastes a full attempt on a target that was never real -- catch
+        # it here and abort cleanly instead. apple_table spans roughly x=[-0.2, 2.4],
+        # y=[-0.25, 0.25]; this check is deliberately generous around that so it only
+        # catches genuinely broken positions, not normal drift.
+        if not (-1.0 <= pose.position.x <= 4.0 and -2.0 <= pose.position.y <= 2.0
+                and 0.0 <= pose.position.z <= 1.0):
+            self.get_logger().error(
+                f"[Sanity check] {target_name} world pose ({pose.position.x:.2f}, "
+                f"{pose.position.y:.2f}, {pose.position.z:.2f}) is way outside the "
+                f"table area -- looks like leftover physics corruption from an earlier "
+                f"run, not a real target. Restart Gazebo to respawn apples cleanly.")
+            return {"target": target_name, "success": False, "reason": "apple_position_corrupted"}
+
         x, y = self.world_to_local(pose.position.x, pose.position.y)
         z_center = pose.position.z
 

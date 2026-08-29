@@ -90,12 +90,23 @@ def append_run_log(entry):
         json.dump(history, f, indent=2)
 
 
+class EnvironmentBroken(Exception):
+    """Raised when the target apple's real pose is nonsensical (e.g. flung far off
+    the table by a bad physics impulse from an earlier bump) -- confirmed to happen
+    directly, and worth stopping the ENTIRE run for immediately rather than burning
+    through the remaining attempts against a target that was never real."""
+
+
 def evaluate(node, target_name, vec, label):
     params = vector_to_policy_params(vec)
     print(f"\n--- {label}: params={ {g: {k: round(v, 3) for k, v in d.items()} for g, d in params.items()} } ---")
     start = time.time()
     result = node.run_for_target(target_name, closing_policy_params=params)
     elapsed = time.time() - start
+    if result.get("reason") in ("apple_position_corrupted", "no_live_pose"):
+        raise EnvironmentBroken(
+            f"{label}: {target_name}'s pose is broken ({result.get('reason')}). "
+            f"Restart Gazebo to respawn apples cleanly, then re-run.")
     reward = result.get("reward", float("-inf"))
     print(f"--- {label}: reward={reward:.2f}  success={result.get('success')}  "
           f"({elapsed:.1f}s) ---")
@@ -136,20 +147,26 @@ def main():
     rclpy.init()
     node = FullLayerGraspNode()
 
-    best_vec = neutral_vector()
-    best_reward = evaluate(node, target_name, best_vec, "baseline (neutral params)")
+    try:
+        best_vec = neutral_vector()
+        best_reward = evaluate(node, target_name, best_vec, "baseline (neutral params)")
 
-    sigma = 0.25
-    for gen in range(generations):
-        print(f"\n=== Generation {gen + 1}/{generations} (sigma={sigma:.3f}) ===")
-        for c in range(lam):
-            candidate = mutate(best_vec, sigma)
-            reward = evaluate(node, target_name, candidate,
-                               f"gen{gen + 1} candidate{c + 1}")
-            if reward > best_reward:
-                print(f"  -> new best! {reward:.2f} > {best_reward:.2f}")
-                best_reward, best_vec = reward, candidate
-        sigma *= 0.8  # narrow the search a bit each generation
+        sigma = 0.25
+        for gen in range(generations):
+            print(f"\n=== Generation {gen + 1}/{generations} (sigma={sigma:.3f}) ===")
+            for c in range(lam):
+                candidate = mutate(best_vec, sigma)
+                reward = evaluate(node, target_name, candidate,
+                                   f"gen{gen + 1} candidate{c + 1}")
+                if reward > best_reward:
+                    print(f"  -> new best! {reward:.2f} > {best_reward:.2f}")
+                    best_reward, best_vec = reward, candidate
+            sigma *= 0.8  # narrow the search a bit each generation
+    except EnvironmentBroken as e:
+        print(f"\n!!! STOPPING RUN: {e}")
+        node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(1)
 
     node.destroy_node()
     rclpy.shutdown()

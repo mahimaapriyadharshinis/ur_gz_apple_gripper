@@ -49,6 +49,43 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
+
+def compute_grasp_reward(contacted, max_effort_seen, steps_taken, lift_gain):
+    """Score one closing attempt, for the learned-closing training loop. Built from
+    signals the pipeline already computes (contact per finger, peak effort per
+    finger, how many closing steps it took, and how much the apple actually rose
+    during the lift) -- no new instrumentation needed, just a scoring function on
+    top of what run_for_target was already measuring.
+
+    Reward shape, in plain terms: more real contact is good; 3+ fingers (the
+    existing success bar) is a clear bonus; the apple genuinely rising during lift
+    is the strongest signal of an actual grasp; any finger crossing the danger
+    threshold (crushing) is penalized hard; a big spread between contacted fingers'
+    peak efforts (one finger doing all the work) is penalized; closing quickly is
+    mildly rewarded so the policy doesn't learn to stall.
+    """
+    n_contacted = sum(contacted.values())
+    reward = 2.0 * n_contacted
+    if n_contacted >= 3:
+        reward += 10.0
+
+    if lift_gain is not None:
+        if lift_gain > 0.03:
+            reward += 15.0
+        else:
+            reward -= 5.0
+
+    for g in FINGER_GROUPS:
+        if max_effort_seen.get(g, 0.0) > EFFORT_DANGER_THRESHOLD:
+            reward -= 8.0
+
+    contacted_efforts = [max_effort_seen[g] for g in FINGER_GROUPS if contacted.get(g)]
+    if len(contacted_efforts) >= 2:
+        reward -= 2.0 * float(np.std(contacted_efforts))
+
+    reward -= 0.03 * steps_taken
+    return reward
+
 # -0.70 was close enough that reaching down onto the apple row required the forearm
 # to sweep in low and shallow, straight through the table -- shoulder_lift_joint was
 # hitting its 150Nm effort limit and getting physically stuck near 0deg no matter
@@ -615,28 +652,45 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         msg.points = [point]
         self.hand_pub.publish(msg)
 
-    def layer3_4_close_with_feedback(self, plan, vlm_result):
+    def layer3_4_close_with_feedback(self, plan, vlm_result, policy_params=None):
+        """policy_params, if given, is a dict {g: {'speed': float, 'threshold_offset':
+        float}} letting a learned policy override each finger's closing speed and
+        contact threshold individually. Left as None, behavior is IDENTICAL to the
+        original fixed schedule (same speed_scale/contact_threshold math, same loop) --
+        deliberate, so the working pipeline never changes unless a policy is explicitly
+        supplied, and the classical version stays available as a safety-net fallback."""
         fragility = vlm_result.get("fragility_score", 5)
         force_word = vlm_result.get("recommended_grip_force", "medium")
         speed_scale = {"low": 1.6, "medium": 1.0, "high": 0.6}.get(force_word, 1.0)
         step_duration = STEP_DURATION * speed_scale
-        contact_threshold = EFFORT_CONTACT_THRESHOLD * (1.0 + (10 - fragility) / 20.0)
+        base_contact_threshold = EFFORT_CONTACT_THRESHOLD * (1.0 + (10 - fragility) / 20.0)
+
+        finger_step_size = {}
+        contact_threshold = {}
+        for g in FINGER_GROUPS:
+            params = (policy_params or {}).get(g, {})
+            finger_step_size[g] = CLOSE_STEP_SIZE * params.get('speed', 1.0)
+            contact_threshold[g] = base_contact_threshold + params.get('threshold_offset', 0.0)
 
         self.get_logger().info(
             f"[Layer 3/4] Closing: max_pitch={plan['max_pitch']:.2f}, "
-            f"step_duration={step_duration:.2f}s, contact_threshold={contact_threshold:.3f}Nm")
+            f"step_duration={step_duration:.2f}s, "
+            f"contact_threshold={base_contact_threshold:.3f}Nm"
+            + (" (learned per-finger params active)" if policy_params else ""))
 
         contacted = {g: False for g in FINGER_GROUPS}
         current = {g: 0.0 for g in FINGER_GROUPS}
         max_effort_seen = {g: 0.0 for g in FINGER_GROUPS}
+        steps_taken = MAX_CLOSE_STEPS
 
         for step in range(MAX_CLOSE_STEPS):
             if all(contacted.values()):
                 self.get_logger().info(f"[Layer 3/4] All fingers contacted after {step} steps.")
+                steps_taken = step
                 break
             for g in FINGER_GROUPS:
                 if not contacted[g]:
-                    current[g] = min(current[g] + CLOSE_STEP_SIZE, plan['max_pitch'])
+                    current[g] = min(current[g] + finger_step_size[g], plan['max_pitch'])
             self.command_fingers(current, step_duration)
             time.sleep(step_duration)
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -646,17 +700,22 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 pos = self.latest_joint_state.get(name, (0, 0, 0))[0]
                 effort = abs(self.latest_joint_state.get(name, (0, 0, 0))[2])
                 max_effort_seen[g] = max(max_effort_seen[g], effort)
-                if effort > contact_threshold and not contacted[g]:
+                if effort > contact_threshold[g] and not contacted[g]:
                     contacted[g] = True
                     self.get_logger().info(f"  [Layer 3] {g}: contact (effort={effort:.3f}Nm)")
                 elif step == MAX_CLOSE_STEPS - 1 and not contacted[g]:
                     self.get_logger().info(
                         f"  [Layer 3] {g}: NO contact. commanded={current[g]:.3f}rad "
                         f"actual_pos={pos:.3f}rad peak_effort={max_effort_seen[g]:.4f}Nm "
-                        f"(threshold={contact_threshold:.3f}Nm)")
+                        f"(threshold={contact_threshold[g]:.3f}Nm)")
 
         n_contacted = sum(contacted.values())
-        return n_contacted >= 3
+        return {
+            "success": n_contacted >= 3,
+            "contacted": contacted,
+            "max_effort_seen": max_effort_seen,
+            "steps_taken": steps_taken,
+        }
 
     def layer5_smooth_lift(self, grasp_joints):
         self.get_logger().info("[Layer 5] Smooth joint-space lift...")
@@ -751,9 +810,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         msg.points = [point]
         self.arm_pub.publish(msg)
 
-    def run_for_target(self, target_name):
+    def run_for_target(self, target_name, closing_policy_params=None):
         """Run the full pick-and-place sequence for one apple at this node's
-        currently-configured station (self.robot_x/y/yaw). Returns a result dict."""
+        currently-configured station (self.robot_x/y/yaw). Returns a result dict.
+        closing_policy_params, if given, is passed straight through to
+        layer3_4_close_with_feedback (see its docstring) -- left as None, this
+        function's behavior is unchanged from before the learned-closing work."""
         self.set_target(target_name)
         self.reset_everything()
 
@@ -956,7 +1018,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         vlm_result = self.layer1_vlm_analysis()
         plan = self.layer2_imagination(vlm_result)
-        grip_ok = self.layer3_4_close_with_feedback(plan, vlm_result)
+        grip_result = self.layer3_4_close_with_feedback(plan, vlm_result, closing_policy_params)
+        grip_ok = grip_result["success"]
 
         self.layer5_smooth_lift(grasp)
         safety_ok = self.layer6_safety_monitor(duration=6.0)
@@ -970,6 +1033,13 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         lifted_ok = (grip_ok and safety_ok and pose_after_lift_world is not None
                      and pose_after_lift_world[2] > pose_before_world[2] + 0.03)
+
+        lift_gain = None
+        if pose_after_lift_world is not None:
+            lift_gain = pose_after_lift_world[2] - pose_before_world[2]
+        reward = compute_grasp_reward(
+            grip_result["contacted"], grip_result["max_effort_seen"],
+            grip_result["steps_taken"], lift_gain)
 
         placed_ok = False
         pose_final_world = pose_after_lift_world
@@ -1003,11 +1073,16 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             "pose_after_lift_world": pose_after_lift_world,
             "pose_final_world": pose_final_world,
             "success": success,
+            "reward": reward,
+            "closing_policy_params": closing_policy_params,
         })
 
-        self.get_logger().info(f"=== RESULT for {target_name}: {'SUCCESS' if success else 'FAILED'} ===")
+        self.get_logger().info(
+            f"=== RESULT for {target_name}: {'SUCCESS' if success else 'FAILED'} "
+            f"(reward={reward:.2f}) ===")
         return {"target": target_name, "success": success, "grip_ok": grip_ok,
-                "safety_ok": safety_ok, "lifted_ok": lifted_ok, "placed_ok": placed_ok}
+                "safety_ok": safety_ok, "lifted_ok": lifted_ok, "placed_ok": placed_ok,
+                "reward": reward}
 
 
 def main():

@@ -124,6 +124,17 @@ def world_to_local(world_x, world_y, robot_x, robot_y, robot_yaw):
     return (dx * cos_yaw - dy * sin_yaw, dx * sin_yaw + dy * cos_yaw)
 
 
+def is_pose_within_table_bounds(x, y, z):
+    """A hand-bumped apple can occasionally get a bad physics impulse and end up
+    flung far from the table (confirmed directly: one seen at world (15.9, -74.0),
+    tens of meters away) rather than just nudged a few cm. apple_table spans roughly
+    x=[-0.2, 2.4], y=[-0.25, 0.25]; this bound is deliberately generous around that
+    so it only catches genuinely broken positions, not normal drift. Shared between
+    run_for_target's abort check and reset_target_apple_position's capture guard, so
+    a corrupted position never gets accidentally locked in as a reset target."""
+    return -1.0 <= x <= 4.0 and -2.0 <= y <= 2.0 and 0.0 <= z <= 1.0
+
+
 # World-frame position the crate must be spawned at in apple_world.world for the
 # place target above to actually land inside it. See apple_gripper_sim/models/crate.
 CRATE_WORLD_XY = local_to_world(CRATE_LOCAL_XY[0], CRATE_LOCAL_XY[1],
@@ -460,6 +471,7 @@ class FullLayerGraspNode(Node):
         self.target_pose = None
         self.latest_joint_state = {}
         self.latest_frame = None
+        self.captured_apple_home_poses = {}
 
         # Real ground-truth position checks, done BY THE SCRIPT ITSELF rather than a
         # human manually timing a second tf2_echo terminal against the log -- that
@@ -554,21 +566,56 @@ class FullLayerGraspNode(Node):
                 f"(threshold={vel_threshold:.4f})")
         return False
 
-    def teleport(self, x, y, yaw):
+    def teleport_model(self, model_name, x, y, z, yaw=0.0, settle_sec=1.5):
+        """Set any model's pose directly via Gazebo's set_pose service -- the same
+        mechanism teleport() already used for the robot ("ur"), generalized so it can
+        also reset an apple back to its real starting position between training
+        attempts (nothing did that before; each attempt used to just continue from
+        wherever the apple drifted to after the previous one, which isn't a fair
+        comparison between different closing-policy candidates)."""
         qz = float(np.sin(yaw / 2.0))
         qw = float(np.cos(yaw / 2.0))
         result = subprocess.run(
             'ign service -s /world/apple_world/set_pose '
             '--reqtype ignition.msgs.Pose --reptype ignition.msgs.Boolean '
             '--timeout 2000 '
-            f"--req 'name: \"ur\" position: {{x: {x} y: {y} z: 0.0}} "
+            f"--req 'name: \"{model_name}\" position: {{x: {x} y: {y} z: {z}}} "
             f"orientation: {{x: 0 y: 0 z: {qz} w: {qw}}}'",
             shell=True, capture_output=True, text=True
         )
         self.get_logger().info(
-            f"Base teleport to ({x:.3f}, {y:.3f}, yaw={yaw:.3f}): "
+            f"Teleport {model_name} to ({x:.3f}, {y:.3f}, {z:.3f}, yaw={yaw:.3f}): "
             f"stdout={result.stdout.strip()!r} stderr={result.stderr.strip()!r}")
-        time.sleep(1.5)
+        if settle_sec:
+            time.sleep(settle_sec)
+
+    def teleport(self, x, y, yaw):
+        self.teleport_model('ur', x, y, 0.0, yaw)
+
+    def reset_target_apple_position(self, target_name):
+        """Capture target_name's real live position the first time it's seen, then on
+        every later call reset it back there via teleport_model() -- so each grasp
+        attempt during training starts from the SAME apple position, regardless of
+        whether a previous attempt bumped it. Silently does nothing the first time
+        (nothing to reset back to yet) and if the target has no live pose at all."""
+        if self.target_pose is None:
+            return
+        if target_name not in self.captured_apple_home_poses:
+            p = self.target_pose
+            if not is_pose_within_table_bounds(p.position.x, p.position.y, p.position.z):
+                self.get_logger().warn(
+                    f"[Apple reset] {target_name}'s live position ({p.position.x:.2f}, "
+                    f"{p.position.y:.2f}, {p.position.z:.2f}) looks corrupted -- NOT "
+                    f"capturing it as home. Restart Gazebo to respawn apples cleanly.")
+                return
+            self.captured_apple_home_poses[target_name] = (
+                p.position.x, p.position.y, p.position.z)
+            self.get_logger().info(
+                f"[Apple reset] Captured {target_name}'s home position: "
+                f"({p.position.x:.3f}, {p.position.y:.3f}, {p.position.z:.3f})")
+            return
+        hx, hy, hz = self.captured_apple_home_poses[target_name]
+        self.teleport_model(target_name, hx, hy, hz, settle_sec=1.0)
 
     def reset_everything(self):
         self.get_logger().info("=== RESET: base position ===")
@@ -817,6 +864,14 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         layer3_4_close_with_feedback (see its docstring) -- left as None, this
         function's behavior is unchanged from before the learned-closing work."""
         self.set_target(target_name)
+        # Reset the apple back to its real starting position BEFORE the robot moves
+        # (avoids any collision risk from teleporting it while the arm is nearby).
+        # First call for a given target just captures its live position as "home";
+        # every later call resets it back there -- otherwise each attempt just
+        # continues from wherever a previous one left it, which isn't a fair
+        # comparison between different closing-policy candidates during training.
+        self.wait_for(lambda: self.target_pose is not None, timeout=5.0)
+        self.reset_target_apple_position(target_name)
         self.reset_everything()
 
         pose = None
@@ -826,15 +881,9 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             self.get_logger().error(f"No live pose for {target_name} -- aborting.")
             return {"target": target_name, "success": False, "reason": "no_live_pose"}
 
-        # A hand-bumped apple can occasionally get a bad physics impulse and end up
-        # flung far from the table (confirmed directly: one seen at world (15.9,
-        # -74.0), tens of meters away) rather than just nudged a few cm. Running IK
-        # against that wastes a full attempt on a target that was never real -- catch
-        # it here and abort cleanly instead. apple_table spans roughly x=[-0.2, 2.4],
-        # y=[-0.25, 0.25]; this check is deliberately generous around that so it only
-        # catches genuinely broken positions, not normal drift.
-        if not (-1.0 <= pose.position.x <= 4.0 and -2.0 <= pose.position.y <= 2.0
-                and 0.0 <= pose.position.z <= 1.0):
+        # Running IK against a corrupted apple position wastes a full attempt on a
+        # target that was never real -- catch it here and abort cleanly instead.
+        if not is_pose_within_table_bounds(pose.position.x, pose.position.y, pose.position.z):
             self.get_logger().error(
                 f"[Sanity check] {target_name} world pose ({pose.position.x:.2f}, "
                 f"{pose.position.y:.2f}, {pose.position.z:.2f}) is way outside the "

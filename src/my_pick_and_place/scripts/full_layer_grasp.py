@@ -724,6 +724,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"step_duration={step_duration:.2f}s, "
             f"contact_threshold={base_contact_threshold:.3f}Nm"
             + (" (learned per-finger params active)" if policy_params else ""))
+        # Diagnostic for the actual_pos=0.000rad-on-every-finger anomaly: if this ever
+        # reads 0, the trajectory message has no subscriber and is being silently
+        # dropped -- a real, checkable cause rather than a guess. If it reads >=1 here
+        # but fingers still don't move, the problem is downstream of the publish.
+        self.get_logger().info(
+            f"[Layer 3/4] hand_pub subscriber count: {self.hand_pub.get_subscription_count()}")
 
         contacted = {g: False for g in FINGER_GROUPS}
         current = {g: 0.0 for g in FINGER_GROUPS}
@@ -864,15 +870,22 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         layer3_4_close_with_feedback (see its docstring) -- left as None, this
         function's behavior is unchanged from before the learned-closing work."""
         self.set_target(target_name)
-        # Reset the apple back to its real starting position BEFORE the robot moves
-        # (avoids any collision risk from teleporting it while the arm is nearby).
-        # First call for a given target just captures its live position as "home";
-        # every later call resets it back there -- otherwise each attempt just
-        # continues from wherever a previous one left it, which isn't a fair
-        # comparison between different closing-policy candidates during training.
         self.wait_for(lambda: self.target_pose is not None, timeout=5.0)
-        self.reset_target_apple_position(target_name)
+        # Move the robot to its rest pose FIRST, then reset the apple -- not the other
+        # way around. reset_everything() only lifts the arm ~20deg (shoulder_lift) from
+        # wherever the previous attempt's grasp left it, so right after an attempt the
+        # hand can still be sitting close to the apple's home spot; teleporting the
+        # apple back there before the robot is clear risks spawning it overlapping the
+        # hand's collision geometry, which Gazebo resolves with a violent separating
+        # impulse -- confirmed as the cause of apples being flung far off the table
+        # right after a reset. First call for a given target just captures its live
+        # position as "home" (the robot hasn't touched the apple yet at that point, so
+        # doing this after reset_everything() doesn't change what gets captured); every
+        # later call resets it back there -- otherwise each attempt just continues from
+        # wherever a previous one left it, which isn't a fair comparison between
+        # different closing-policy candidates during training.
         self.reset_everything()
+        self.reset_target_apple_position(target_name)
 
         pose = None
         if self.wait_for(lambda: self.target_pose is not None, timeout=5.0):

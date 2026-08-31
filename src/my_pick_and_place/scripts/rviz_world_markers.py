@@ -18,6 +18,7 @@ Then in RViz: Add -> By display type -> MarkerArray, set topic to /world_markers
 Fixed Frame should already be base_footprint (same frame real_wrist_position()
 already looks up successfully).
 """
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
@@ -60,7 +61,14 @@ class WorldMarkers(Node):
         table.pose.position.x = lx
         table.pose.position.y = ly
         table.pose.position.z = TABLE_WORLD_XYZ[2]
-        table.pose.orientation.w = 1.0
+        # The table's box is world-axis-aligned (long side along world X), but its
+        # POSITION above was rotated into the robot's local frame (which is rotated by
+        # the station yaw relative to world) -- the box's ORIENTATION needs the same
+        # rotation, or it stays drawn as if unrotated while the apples (whose positions
+        # go through the same rotation) end up spread along the axis actually
+        # perpendicular to how the table is drawn.
+        table.pose.orientation.z = np.sin(-DELIVERY_ROBOT_YAW / 2.0)
+        table.pose.orientation.w = np.cos(-DELIVERY_ROBOT_YAW / 2.0)
         table.scale.x, table.scale.y, table.scale.z = TABLE_SIZE
         table.color.r, table.color.g, table.color.b, table.color.a = 0.55, 0.42, 0.30, 1.0
         arr.markers.append(table)

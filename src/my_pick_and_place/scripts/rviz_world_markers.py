@@ -93,6 +93,25 @@ class WorldMarkers(Node):
                 m.pose.orientation.w = 1.0
                 m.scale.x = m.scale.y = m.scale.z = APPLE_DIAMETER
                 m.color.r, m.color.g, m.color.b, m.color.a = 0.8, 0.05, 0.05, 1.0
+
+                # Number label above each apple -- with plain unlabeled dots there was
+                # no way to tell which of the 10 apples were actually showing up vs.
+                # missing, which is exactly the question that came up.
+                label = Marker()
+                label.header.frame_id = 'base_footprint'
+                label.header.stamp = m.header.stamp
+                label.ns = 'apple_labels'
+                label.id = i + 1
+                label.type = Marker.TEXT_VIEW_FACING
+                label.action = Marker.ADD
+                label.pose.position.x = ax
+                label.pose.position.y = ay
+                label.pose.position.z = pose.position.z + 0.08
+                label.pose.orientation.w = 1.0
+                label.scale.z = 0.05
+                label.color.r, label.color.g, label.color.b, label.color.a = 1.0, 1.0, 1.0, 1.0
+                label.text = name
+                arr.markers.append(label)
             arr.markers.append(m)
 
         self.pub.publish(arr)

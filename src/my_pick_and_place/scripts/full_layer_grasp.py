@@ -796,6 +796,17 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                         self.send_arm_trajectory(grasp, 1.0)
                         self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=6.0,
                                               min_wait=1.0)
+                        # Twice now, fingers have frozen (stopped tracking new commanded
+                        # positions, despite near-zero effort) right after a re-center's
+                        # arm-trajectory-plus-long-wait sequence in the same attempt --
+                        # both times the freeze point matched roughly where the fingers
+                        # were when the re-center fired. Checking the subscriber count
+                        # again here (already logged once before closing started) tells
+                        # us directly whether the hand controller's connection is
+                        # actually dropping, instead of guessing.
+                        self.get_logger().info(
+                            f"[Mid-close re-center] hand_pub subscriber count after "
+                            f"re-center: {self.hand_pub.get_subscription_count()}")
                         real_wrist = self.real_wrist_position()
                         if real_wrist is not None:
                             self.get_logger().info(

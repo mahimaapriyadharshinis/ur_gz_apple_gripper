@@ -794,8 +794,17 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                     if recenter_result is not None:
                         grasp, _ = recenter_result
                         self.send_arm_trajectory(grasp, 1.0)
-                        self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=6.0,
-                                              min_wait=1.0)
+                        # Confirmed directly: under Gazebo's GUI on this VM, the
+                        # simulation runs well below real-time (joints still moving
+                        # fast -- e.g. 1.2 rad/s -- after the old 6s wall-clock
+                        # timeout), so a short timeout gives up before the arm has
+                        # actually finished moving and reads a stale, wrong position.
+                        # wait_for_settled measures real (wall-clock) time, so a
+                        # generous timeout here just costs extra real seconds under
+                        # normal (real-time) headless operation -- it doesn't change
+                        # behavior when the sim is keeping up.
+                        self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=30.0,
+                                              min_wait=2.0)
                         # Twice now, fingers have frozen (stopped tracking new commanded
                         # positions, despite near-zero effort) right after a re-center's
                         # arm-trajectory-plus-long-wait sequence in the same attempt --
@@ -1054,7 +1063,11 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             # check from exiting on stale, pre-motion /joint_states data before the
             # controller has even started executing this trajectory -- confirmed to
             # happen directly: [Pre-close check] once fired just 0.045s after send.
-            settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=20.0,
+            # timeout raised from 20s -- confirmed directly that Gazebo's GUI on this
+            # VM runs well below real-time (joints still moving at 0.5-0.6 rad/s after
+            # the old 20s wall-clock timeout), so 20s wasn't enough real time for a
+            # real (just slow) trajectory to actually finish under the GUI's load.
+            settled = self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=60.0,
                                              min_wait=grasp_traj_duration)
             if not settled:
                 self.get_logger().warn(
@@ -1140,8 +1153,11 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 if recenter_result is not None:
                     grasp, grasp_full_sol = recenter_result
                     self.send_arm_trajectory(grasp, 1.5)
-                    self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=10.0,
-                                          min_wait=1.5)
+                    # timeout raised from 10s -- same GUI slow-motion issue as the
+                    # other wait_for_settled calls: a short wall-clock timeout gives
+                    # up before a real (just slow, under GUI load) trajectory finishes.
+                    self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=30.0,
+                                          min_wait=2.0)
                     real_wrist = self.real_wrist_position()
                     if real_wrist is not None:
                         self.get_logger().info(

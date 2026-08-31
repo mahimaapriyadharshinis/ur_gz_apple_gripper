@@ -13,6 +13,13 @@ pkill -9 -f "parameter_bridge" 2>/dev/null || true
 pkill -9 -f "ros2 launch" 2>/dev/null || true
 sleep 2
 
+# full_layer_grasp.py's IK chain loads this static URDF from /tmp -- WSL2 clears /tmp
+# on every reboot, so it must be regenerated each fresh session or the grasp/diagnostic/
+# training scripts fail immediately with FileNotFoundError. Doing it here means it's
+# always fresh and this never has to be a separate manual step again.
+echo "=== Regenerating /tmp/real_robot_exact.urdf (cleared on WSL2 reboot) ==="
+xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro > /tmp/real_robot_exact.urdf
+
 # gazebo_gui:=false runs `ign gazebo -s` (server only, no GUI process). The Sensors
 # system (physics/gripper_camera/ros2_control) is a separate subsystem from the GUI
 # and works fine on this VM under ogre1 (see apple_world.world) -- the GUI's own 3D

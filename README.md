@@ -2,6 +2,14 @@
 
 All commands run inside WSL2, in `~/ur_gz_ws`.
 
+**Every new terminal** needs ROS sourced before any `ros2 ...` command will
+see anything (an empty `ros2 topic list` almost always means this step was
+skipped, not that something is broken):
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ur_gz_ws/install/setup.bash
+```
+
 ## 1. Start everything (normal way)
 
 ```bash
@@ -9,10 +17,12 @@ cd ~/ur_gz_ws
 bash start_everything.sh
 ```
 
-This kills any leftover processes, launches Gazebo **headless** (no GUI window —
-the GUI's 3D renderer crashes/fails on this VM's graphics driver, this is
-expected, not a bug), activates the hand controller, and starts the camera +
-apple pose bridges.
+This kills any leftover processes, regenerates `/tmp/real_robot_exact.urdf`
+(the static URDF the IK code loads — WSL2 clears `/tmp` on every reboot, so
+this must happen every fresh session or the grasp/diagnostic/training scripts
+fail immediately with `FileNotFoundError`), launches Gazebo **headless** (no
+GUI window — see the GUI note below), activates the hand controller, and
+starts the camera + apple pose bridges.
 
 Wait for `=== SETUP COMPLETE. Verifying... ===` at the end, then confirm:
 - `dexhand_controller` shows `ACTIVE`
@@ -86,9 +96,19 @@ condition — the bridge processes can take a few seconds longer than the
 script's own wait. Re-run the `ros2 topic list` check above before assuming
 something is broken.
 
-**Want to see Gazebo visually**: pass `gazebo_gui:=true` to the
-`ros2 launch` command instead of using `start_everything.sh` directly (see
-that script for the full command with all required env vars/paths). This is
-currently unreliable on this VM (blank viewport/empty scene) — headless mode
-is the normal way to run and doesn't affect any of the actual pick-and-place
-logic, which only talks to Gazebo over ROS topics/services.
+**Missing `/tmp/real_robot_exact.urdf` (`FileNotFoundError`)**: only happens
+if a grasp/diagnostic/training script is run without `start_everything.sh`
+having run first in this WSL session (it regenerates this file — see step 1).
+Fix directly if needed:
+```bash
+xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro > /tmp/real_robot_exact.urdf
+```
+
+**Want to see Gazebo visually**: pass `gazebo_gui:=true` to the `ros2 launch`
+command instead of using `start_everything.sh` directly (see that script for
+the full command with all required env vars/paths). Confirmed working, but
+the first load can take up to ~60s (downloading/caching the Fuel models) —
+give it that long before assuming it's broken. Headless mode is still the
+default since nothing the pick-and-place logic does needs a GUI (it only
+talks to Gazebo over ROS topics/services); use the GUI only when you actually
+want to watch it.

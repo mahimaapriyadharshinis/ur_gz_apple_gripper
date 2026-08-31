@@ -699,13 +699,19 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         msg.points = [point]
         self.hand_pub.publish(msg)
 
-    def layer3_4_close_with_feedback(self, plan, vlm_result, policy_params=None):
+    def layer3_4_close_with_feedback(self, plan, vlm_result, grasp_target, grasp,
+                                      policy_params=None):
         """policy_params, if given, is a dict {g: {'speed': float, 'threshold_offset':
         float}} letting a learned policy override each finger's closing speed and
         contact threshold individually. Left as None, behavior is IDENTICAL to the
         original fixed schedule (same speed_scale/contact_threshold math, same loop) --
         deliberate, so the working pipeline never changes unless a policy is explicitly
-        supplied, and the classical version stays available as a safety-net fallback."""
+        supplied, and the classical version stays available as a safety-net fallback.
+        grasp_target/grasp are the [x, y, z] IK target and the joint solution currently
+        aiming the wrist there -- needed here (not just in run_for_target) so a mid-close
+        push can be corrected for in real time; the (possibly updated) grasp is returned
+        so the caller lifts from wherever the wrist actually ended up, not the stale
+        pre-closing position."""
         fragility = vlm_result.get("fragility_score", 5)
         force_word = vlm_result.get("recommended_grip_force", "medium")
         speed_scale = {"low": 1.6, "medium": 1.0, "high": 0.6}.get(force_word, 1.0)
@@ -735,6 +741,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         current = {g: 0.0 for g in FINGER_GROUPS}
         max_effort_seen = {g: 0.0 for g in FINGER_GROUPS}
         steps_taken = MAX_CLOSE_STEPS
+        apple_pose_at_recenter = self.target_pose
+        recentered_during_close = False
 
         for step in range(MAX_CLOSE_STEPS):
             if all(contacted.values()):
@@ -762,12 +770,53 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                         f"actual_pos={pos:.3f}rad peak_effort={max_effort_seen[g]:.4f}Nm "
                         f"(threshold={contact_threshold[g]:.3f}Nm)")
 
+            # Reactive reposition, one-shot per attempt like the pre-close re-center:
+            # a finger closing on the apple can shove it sideways before enough other
+            # fingers make contact, same physical effect as the lowering-phase bump
+            # already handled above -- just happening mid-close instead of before it.
+            # Pause, re-aim the wrist at the apple's real current position, and
+            # continue closing from there instead of grabbing at empty air where it
+            # used to be.
+            if (not recentered_during_close and apple_pose_at_recenter is not None
+                    and self.target_pose is not None):
+                dx = self.target_pose.position.x - apple_pose_at_recenter.position.x
+                dy = self.target_pose.position.y - apple_pose_at_recenter.position.y
+                dz = self.target_pose.position.z - apple_pose_at_recenter.position.z
+                drift = (dx ** 2 + dy ** 2 + dz ** 2) ** 0.5
+                if drift > 0.02:
+                    self.get_logger().info(
+                        f"[Mid-close re-center] Apple drifted {drift:.3f}m during closing "
+                        f"(step {step}) -- pausing to re-aim at its real current position.")
+                    new_local_x, new_local_y = self.world_to_local(
+                        self.target_pose.position.x, self.target_pose.position.y)
+                    recenter_target = [new_local_x, new_local_y, grasp_target[2]]
+                    recenter_result = solve_ik(self.chain, recenter_target)
+                    if recenter_result is not None:
+                        grasp, _ = recenter_result
+                        self.send_arm_trajectory(grasp, 1.0)
+                        self.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=6.0,
+                                              min_wait=1.0)
+                        real_wrist = self.real_wrist_position()
+                        if real_wrist is not None:
+                            self.get_logger().info(
+                                f"[Mid-close re-center] re-solved for "
+                                f"({recenter_target[0]:.3f}, {recenter_target[1]:.3f}, "
+                                f"{recenter_target[2]:.3f}), real wrist now "
+                                f"({real_wrist[0]:.3f}, {real_wrist[1]:.3f}, "
+                                f"{real_wrist[2]:.3f})")
+                    else:
+                        self.get_logger().warn(
+                            f"[Mid-close re-center] target {recenter_target} UNREACHABLE -- "
+                            f"proceeding with the stale target.")
+                    recentered_during_close = True
+
         n_contacted = sum(contacted.values())
         return {
             "success": n_contacted >= 3,
             "contacted": contacted,
             "max_effort_seen": max_effort_seen,
             "steps_taken": steps_taken,
+            "grasp": grasp,
         }
 
     def layer5_smooth_lift(self, grasp_joints):
@@ -1096,8 +1145,10 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         vlm_result = self.layer1_vlm_analysis()
         plan = self.layer2_imagination(vlm_result)
-        grip_result = self.layer3_4_close_with_feedback(plan, vlm_result, closing_policy_params)
+        grip_result = self.layer3_4_close_with_feedback(
+            plan, vlm_result, grasp_target, grasp, closing_policy_params)
         grip_ok = grip_result["success"]
+        grasp = grip_result.get("grasp", grasp)
 
         self.layer5_smooth_lift(grasp)
         safety_ok = self.layer6_safety_monitor(duration=6.0)

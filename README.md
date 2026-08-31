@@ -71,7 +71,25 @@ the target apple's position looks corrupted (see Troubleshooting).
 
 Optional flags: `--generations N` (default 3), `--lambda N` (default 3).
 
-## 5. VLM layer (optional, separate terminal)
+## 5. See the apples/table in RViz (no Gazebo GUI needed)
+
+```bash
+cd ~/ur_gz_ws/src/my_pick_and_place/scripts
+python3 rviz_world_markers.py
+```
+
+Publishes the table and all 10 apples as RViz markers on `/world_markers`,
+using the same live Gazebo pose topics and coordinate math the grasp code
+itself uses. In RViz: **Add → By display type → MarkerArray**, set the topic
+to `/world_markers`. Also add an **Image** display pointed at `/gripper_camera`
+or `/overhead_camera` to see the camera views.
+
+This is the recommended way to watch things happen — RViz just subscribes to
+topics, it doesn't share a render loop with the physics engine, so unlike
+Gazebo's own GUI it doesn't slow the simulation down or corrupt timing-based
+runs.
+
+## 6. VLM layer (optional, separate terminal)
 
 ```bash
 cd ~/vlm_scripts

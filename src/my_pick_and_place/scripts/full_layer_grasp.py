@@ -980,27 +980,43 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"[Coordinate fix] World pos ({pose.position.x:.3f}, {pose.position.y:.3f}) "
             f"-> Robot-frame pos ({x:.3f}, {y:.3f})")
 
-        # Confirmed via the mesh itself (Index_Tip_1's visual origin z = -0.163947 in
-        # dexhandv2_right.urdf): fingers are ~0.164m long from the wrist
-        # (dexhand_base_link) to fingertip. The previous grasp height (apple top + 1cm)
-        # put the wrist only ~9cm above the ground -- an open, straight finger from
-        # there reaches ~7cm BELOW the floor, physically impossible, so fingers were
-        # resting on the ground before closing even started (confirmed: user reported
-        # fingers touching the ground, and R_Middle spiking to 33Nm during lift,
-        # consistent with a finger wedged against something immovable). Positioning
-        # the wrist so an open, straight fingertip lands at the apple's own center
-        # height gives the closing/curling motion room to actually wrap the object
-        # instead of bottoming out on the floor first.
-        FINGER_LENGTH = 0.164
-        grasp_z = z_center + FINGER_LENGTH
+        # Measured directly via TF (finger_geometry_check.py, not a guess): with the
+        # hand open, the fingertips' average position relative to dexhand_base_link
+        # (the wrist frame IK aims) is NOT at the wrist's own origin -- it sits offset
+        # by about (0.065, -0.006, 0.102)m in the wrist's own local frame. Aiming the
+        # WRIST directly at the apple (the old approach, which only ever added a
+        # single fixed height for FINGER_LENGTH) left the FINGERS off-center by this
+        # same amount -- confirmed visually: the apple sat near one edge of the open
+        # hand instead of centered between the fingers, and got pushed away instead
+        # of enveloped. Correcting for this needs the wrist's actual achieved
+        # orientation (a fixed offset in the wrist's own frame maps to a different
+        # world/local-frame offset depending on which way the wrist ends up facing),
+        # so this solves IK twice: once for a rough target to get that orientation,
+        # then again for the corrected target so the FINGERS -- not the bare wrist --
+        # land at the apple's real measured position.
+        FINGERTIP_CENTROID_HAND_FRAME = np.array([0.0651, -0.0058, 0.1024])
+
+        rough_target = [x, y, z_center + 0.164]
+        rough_result = solve_ik(self.chain, rough_target)
+        if rough_result is None:
+            self.get_logger().error(f"UNREACHABLE: {rough_target}")
+            return {"target": target_name, "success": False, "reason": "unreachable_grasp"}
+        _, rough_full_sol = rough_result
+        wrist_rotation = hand_fk(self.chain, rough_full_sol)[:3, :3]
+        offset_local = wrist_rotation @ FINGERTIP_CENTROID_HAND_FRAME
+        grasp_target = [x - offset_local[0], y - offset_local[1], z_center - offset_local[2]]
+        self.get_logger().info(
+            f"[Finger-center correction] fingertip offset in local frame = "
+            f"({offset_local[0]:.3f}, {offset_local[1]:.3f}, {offset_local[2]:.3f}) -- "
+            f"corrected wrist target ({grasp_target[0]:.3f}, {grasp_target[1]:.3f}, "
+            f"{grasp_target[2]:.3f}) so fingers land at ({x:.3f}, {y:.3f}, {z_center:.3f})")
 
         # 0.15m hover was untested reach margin, not a real requirement -- the grasp
         # point itself solves with ~0 error at this station (see find_station.py), but
         # adding 0.15m of extra height pushed the wrist just past real reach (0.059m
         # error vs 0.05m fallback ceiling). 0.08m still clears the apple (radius
         # ~0.04m) by a comfortable margin before descending, well inside reach.
-        approach_target = [x, y, grasp_z + 0.08]
-        grasp_target = [x, y, grasp_z]
+        approach_target = [grasp_target[0], grasp_target[1], grasp_target[2] + 0.08]
 
         approach_result = solve_ik(self.chain, approach_target)
         if approach_result is None:

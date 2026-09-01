@@ -17,12 +17,19 @@ cd ~/ur_gz_ws
 bash start_everything.sh
 ```
 
-This kills any leftover processes, regenerates `/tmp/real_robot_exact.urdf`
-(the static URDF the IK code loads — WSL2 clears `/tmp` on every reboot, so
-this must happen every fresh session or the grasp/diagnostic/training scripts
-fail immediately with `FileNotFoundError`), launches Gazebo **headless** (no
-GUI window — see the GUI note below), activates the hand controller, and
-starts the camera + apple pose bridges.
+Or, to also see Gazebo's own 3D window:
+```bash
+cd ~/ur_gz_ws
+bash start_everything.sh gui
+```
+
+Either way, this kills any leftover processes, regenerates
+`/tmp/real_robot_exact.urdf` (the static URDF the IK code loads — WSL2 clears
+`/tmp` on every reboot, so this must happen every fresh session or the
+grasp/diagnostic/training scripts fail immediately with `FileNotFoundError`),
+launches Gazebo, activates the hand controller, and starts the camera + apple
+pose bridges. With `gui`, it waits up to 60s for the window to finish loading
+(first-time Fuel model download/cache) before continuing.
 
 Wait for `=== SETUP COMPLETE. Verifying... ===` at the end, then confirm:
 - `dexhand_controller` shows `ACTIVE`
@@ -122,11 +129,13 @@ Fix directly if needed:
 xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro > /tmp/real_robot_exact.urdf
 ```
 
-**Want to see Gazebo visually**: pass `gazebo_gui:=true` to the `ros2 launch`
-command instead of using `start_everything.sh` directly (see that script for
-the full command with all required env vars/paths). Confirmed working, but
-the first load can take up to ~60s (downloading/caching the Fuel models) —
-give it that long before assuming it's broken. Headless mode is still the
-default since nothing the pick-and-place logic does needs a GUI (it only
-talks to Gazebo over ROS topics/services); use the GUI only when you actually
-want to watch it.
+**Want to see Gazebo visually**: `bash start_everything.sh gui` (see step 1).
+Confirmed working, but the first load can take up to ~60s (downloading/
+caching the Fuel models) — give it that long before assuming it's broken.
+`wait_for_settled`'s timeouts in `full_layer_grasp.py` were raised
+specifically to tolerate the GUI running well below real-time on this VM, so
+GUI-mode runs are correct, just slower wall-clock than headless. Headless is
+still the default since nothing the pick-and-place logic needs a GUI for (it
+only talks to Gazebo over ROS topics/services) and it's faster; use `gui`
+only when you actually want to watch, or use `rviz_world_markers.py` (step 5)
+instead, which never shares Gazebo's render loop at all.

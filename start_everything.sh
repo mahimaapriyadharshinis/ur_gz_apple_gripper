@@ -1,5 +1,16 @@
 #!/bin/bash
 set -e
+
+# Pass "gui" as the first argument to launch Gazebo's GUI (bash start_everything.sh
+# gui). Previously this required copy-pasting a long separate manual command every
+# time -- folding it in here means it's one command either way. wait_for_settled's
+# timeouts were raised specifically so GUI mode (which runs well below real-time on
+# this VM) still produces correct, trustworthy results instead of stale ones.
+GUI_FLAG=false
+if [ "$1" = "gui" ]; then
+    GUI_FLAG=true
+fi
+
 source /opt/ros/humble/setup.bash
 source ~/ur_gz_ws/install/setup.bash
 export LIBGL_ALWAYS_SOFTWARE=1
@@ -20,24 +31,32 @@ sleep 2
 echo "=== Regenerating /tmp/real_robot_exact.urdf (cleared on WSL2 reboot) ==="
 xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro > /tmp/real_robot_exact.urdf
 
-# gazebo_gui:=false runs `ign gazebo -s` (server only, no GUI process). The Sensors
-# system (physics/gripper_camera/ros2_control) is a separate subsystem from the GUI
-# and works fine on this VM under ogre1 (see apple_world.world) -- the GUI's own 3D
-# view is still ogre2 and crashes (Ogre::UnimplementedException in GL3PlusTextureGpu)
-# when apple meshes load. Skipping the GUI avoids that crash entirely; nothing the
-# grasp scripts do needs it, they only talk to Gazebo over ROS topics/services.
-echo "=== Launching simulation with apple_world, headless (background) ==="
+# gazebo_gui:=false runs `ign gazebo -s` (server only, no GUI process) -- the default,
+# since the GUI's 3D view runs well below real-time on this VM (confirmed directly:
+# joints still moving fast after generous timeouts). Pass "gui" as this script's first
+# argument to launch the GUI anyway; wait_for_settled's timeouts were raised
+# specifically to tolerate that slowdown, so GUI-mode runs are now trustworthy, just
+# slower wall-clock than headless.
+if [ "$GUI_FLAG" = true ]; then
+    echo "=== Launching simulation with apple_world, GUI enabled (background) ==="
+else
+    echo "=== Launching simulation with apple_world, headless (background) ==="
+fi
 setsid ros2 launch ur_simulation_gz ur_sim_control.launch.py \
     ur_type:=ur5e \
     description_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro \
     controllers_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/merged_controllers.yaml \
     world_file:=/home/mahimaa/ur_gz_ws/src/apple_gripper_sim/worlds/apple_world.world \
-    gazebo_gui:=false \
+    gazebo_gui:=$GUI_FLAG \
     > /tmp/sim_launch.log 2>&1 < /dev/null &
 disown
 
 echo "Waiting for simulation to be ready..."
-sleep 12
+if [ "$GUI_FLAG" = true ]; then
+    sleep 60
+else
+    sleep 12
+fi
 
 echo "=== Activating hand controller ==="
 ros2 run controller_manager spawner dexhand_controller --controller-manager /controller_manager

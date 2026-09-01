@@ -19,9 +19,16 @@ export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:~/ur_gz_ws/src:~/ur_gz
 export IGN_GAZEBO_SYSTEM_PLUGIN_PATH=$IGN_GAZEBO_SYSTEM_PLUGIN_PATH:/opt/ros/humble/lib
 
 echo "=== Killing any leftover processes ==="
-pkill -9 -f "ign gazebo server" 2>/dev/null || true
+# "ign gazebo server" never actually matched anything -- the literal word "server"
+# isn't in the real command line (headless uses a "-s" flag, not that word), so old
+# Gazebo/controller_manager processes were never reliably killed here. That's why a
+# stale dexhand_controller could still be "already loaded" against a supposedly-fresh
+# launch. Broadened to match both binary names Ignition/Gazebo uses.
+pkill -9 -f "ign gazebo" 2>/dev/null || true
+pkill -9 -f "gz sim" 2>/dev/null || true
 pkill -9 -f "parameter_bridge" 2>/dev/null || true
 pkill -9 -f "ros2 launch" 2>/dev/null || true
+pkill -9 -f "ros2_control_node" 2>/dev/null || true
 sleep 2
 
 # full_layer_grasp.py's IK chain loads this static URDF from /tmp -- WSL2 clears /tmp

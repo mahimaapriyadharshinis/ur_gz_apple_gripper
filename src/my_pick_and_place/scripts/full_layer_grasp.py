@@ -1004,16 +1004,13 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         _, rough_full_sol = rough_result
         wrist_rotation = hand_fk(self.chain, rough_full_sol)[:3, :3]
         offset_local = wrist_rotation @ FINGERTIP_CENTROID_HAND_FRAME
-        # Z uses the OLD height (z_center + 0.164), not the fully corrected one, as a
-        # deliberate interim compromise: correcting Z with the real measured offset
-        # (0.102m, less than the old 0.164m guess) commands the wrist ~6cm lower than
-        # every prior run -- confirmed directly to cause a real collision (shoulder_lift
-        # pinned at its 150Nm max effort, identical across every correction attempt,
-        # same signature as the earlier confirmed arm-vs-table collision). The X/Y
-        # correction is kept since it's confirmed working (apple drift during lowering
-        # went from ~0.08m to 0.000m). A real fix needs an explicit table-clearance
-        # check rather than reusing the old height forever -- flagged, not yet built.
-        grasp_target = [x - offset_local[0], y - offset_local[1], z_center + 0.164]
+        # TEMPORARY ISOLATION TEST: fully corrected Z (real measured offset), but NO
+        # X/Y lateral correction -- to find out whether the earlier shoulder_lift
+        # collision (150Nm, pinned) was caused by the lower height alone, or by height
+        # COMBINED WITH the lateral shift. Revert to the X/Y-corrected version once
+        # this is answered; the Z-only version isn't the intended final aiming (it
+        # reintroduces the off-center problem the X/Y correction fixed).
+        grasp_target = [x, y, z_center - offset_local[2]]
         self.get_logger().info(
             f"[Finger-center correction] fingertip offset in local frame = "
             f"({offset_local[0]:.3f}, {offset_local[1]:.3f}, {offset_local[2]:.3f}) -- "

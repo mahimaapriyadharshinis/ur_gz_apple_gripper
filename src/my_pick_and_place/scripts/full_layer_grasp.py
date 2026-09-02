@@ -106,6 +106,16 @@ DELIVERY_ROBOT_YAW = 1.5708
 CRATE_LOCAL_XY = (-0.6, 0.0)
 CRATE_LOCAL_Z = 0.08
 
+# Apples' known real spawn positions, straight from apple_world.world (apple_NN at
+# world (0.25*(NN-1), 0.00, 0.45), settling to Z=0.440 under gravity -- confirmed
+# consistently, every clean-restart run this session). Used as the fixed reset target
+# in reset_target_apple_position() instead of capturing whatever live position is seen
+# first -- capturing live position was confirmed to lock in an already-disturbed spot
+# as "home" if an earlier run was interrupted after nudging the apple but before that
+# nudge was big enough to trip the corruption sanity check.
+APPLE_HOME_WORLD_XY = {f"apple_{i:02d}": (0.25 * (i - 1), 0.00) for i in range(1, 11)}
+APPLE_HOME_Z = 0.440
+
 
 def local_to_world(x_local, y_local, robot_x, robot_y, robot_yaw):
     cos_yaw = np.cos(robot_yaw)
@@ -471,7 +481,6 @@ class FullLayerGraspNode(Node):
         self.target_pose = None
         self.latest_joint_state = {}
         self.latest_frame = None
-        self.captured_apple_home_poses = {}
 
         # Real ground-truth position checks, done BY THE SCRIPT ITSELF rather than a
         # human manually timing a second tf2_echo terminal against the log -- that
@@ -593,29 +602,24 @@ class FullLayerGraspNode(Node):
         self.teleport_model('ur', x, y, 0.0, yaw)
 
     def reset_target_apple_position(self, target_name):
-        """Capture target_name's real live position the first time it's seen, then on
-        every later call reset it back there via teleport_model() -- so each grasp
-        attempt during training starts from the SAME apple position, regardless of
-        whether a previous attempt bumped it. Silently does nothing the first time
-        (nothing to reset back to yet) and if the target has no live pose at all."""
-        if self.target_pose is None:
+        """Reset target_name back to its known real spawn position (from
+        apple_world.world) every call -- so each grasp attempt starts from the SAME
+        apple position, regardless of whether a previous attempt bumped it.
+
+        Previously this captured whatever LIVE position was seen the first time as
+        "home" -- confirmed to be a real bug: if an earlier run was interrupted
+        (e.g. Ctrl+C mid-lowering) after already nudging the apple, but before that
+        nudge was big enough to trip the corruption sanity check, the NEXT fresh
+        process run would have no memory of the true original spot and would lock in
+        that already-disturbed position as "home" -- silently invalidating every
+        later attempt in that run. Using the world file's own declared spawn
+        position instead is immune to this, since it never changes."""
+        if target_name not in APPLE_HOME_WORLD_XY:
+            self.get_logger().warn(
+                f"[Apple reset] No known spawn position for {target_name} -- skipping reset.")
             return
-        if target_name not in self.captured_apple_home_poses:
-            p = self.target_pose
-            if not is_pose_within_table_bounds(p.position.x, p.position.y, p.position.z):
-                self.get_logger().warn(
-                    f"[Apple reset] {target_name}'s live position ({p.position.x:.2f}, "
-                    f"{p.position.y:.2f}, {p.position.z:.2f}) looks corrupted -- NOT "
-                    f"capturing it as home. Restart Gazebo to respawn apples cleanly.")
-                return
-            self.captured_apple_home_poses[target_name] = (
-                p.position.x, p.position.y, p.position.z)
-            self.get_logger().info(
-                f"[Apple reset] Captured {target_name}'s home position: "
-                f"({p.position.x:.3f}, {p.position.y:.3f}, {p.position.z:.3f})")
-            return
-        hx, hy, hz = self.captured_apple_home_poses[target_name]
-        self.teleport_model(target_name, hx, hy, hz, settle_sec=1.0)
+        hx, hy = APPLE_HOME_WORLD_XY[target_name]
+        self.teleport_model(target_name, hx, hy, APPLE_HOME_Z, settle_sec=1.0)
 
     def reset_everything(self):
         self.get_logger().info("=== RESET: base position ===")
@@ -947,12 +951,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         # apple back there before the robot is clear risks spawning it overlapping the
         # hand's collision geometry, which Gazebo resolves with a violent separating
         # impulse -- confirmed as the cause of apples being flung far off the table
-        # right after a reset. First call for a given target just captures its live
-        # position as "home" (the robot hasn't touched the apple yet at that point, so
-        # doing this after reset_everything() doesn't change what gets captured); every
-        # later call resets it back there -- otherwise each attempt just continues from
-        # wherever a previous one left it, which isn't a fair comparison between
-        # different closing-policy candidates during training.
+        # right after a reset. reset_target_apple_position() teleports to the apple's
+        # known real spawn position (from apple_world.world) every call -- otherwise
+        # each attempt just continues from wherever a previous one left it, which
+        # isn't a fair comparison between different closing-policy candidates during
+        # training (and, confirmed directly, can silently start a whole run from an
+        # already-disturbed position if an earlier run was interrupted).
         self.reset_everything()
         self.reset_target_apple_position(target_name)
 

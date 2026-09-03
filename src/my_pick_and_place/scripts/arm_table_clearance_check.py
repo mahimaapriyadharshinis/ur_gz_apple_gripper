@@ -95,17 +95,73 @@ def main():
         print("WARNING: no subscriber on the arm trajectory topic -- the command will "
               "go nowhere. Is the simulation actually running with controllers active?")
 
-    print("Commanding arm toward the grasp height (may peg at max effort -- that's expected)...")
-    node.send_arm_trajectory(joints, 4.0)
-    node.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=15.0, min_wait=5.0)
-    time.sleep(1.0)
-    for _ in range(10):
-        rclpy.spin_once(node, timeout_sec=0.1)
-
     min_x, max_x, min_y, max_y = table_local_bbox()
     print(f"\nTable footprint in robot-local frame: x=[{min_x:.3f}, {max_x:.3f}] "
-          f"y=[{min_y:.3f}, {max_y:.3f}], top_z={TABLE_TOP_Z:.3f}\n")
+          f"y=[{min_y:.3f}, {max_y:.3f}], top_z={TABLE_TOP_Z:.3f}")
 
+    print("\nCommanding arm toward the grasp height (may peg at max effort -- expected)...")
+    node.send_arm_trajectory(joints, 4.0)
+
+    # Sample continuously rather than measuring once after "settling". Two reasons,
+    # both confirmed directly: (1) a single measurement caught the arm mid-flight
+    # (still moving at 0.44 rad/s) and showed normal efforts, which reads as "no
+    # collision" purely because it was taken too early; (2) the collision can be
+    # transient -- a link can strike the table during the motion even if the final
+    # pose looks clear. Sampling catches whichever moment things actually go wrong.
+    SAMPLE_SECONDS = 60.0
+    SAMPLE_INTERVAL = 2.0
+    start = time.time()
+    worst_efforts = {j: 0.0 for j in ARM_JOINTS}
+    overlaps_seen = set()
+
+    while time.time() - start < SAMPLE_SECONDS:
+        for _ in range(int(SAMPLE_INTERVAL / 0.1)):
+            rclpy.spin_once(node, timeout_sec=0.1)
+        elapsed = time.time() - start
+
+        positions = {}
+        for link in ARM_LINKS:
+            try:
+                t = node.tf_buffer.lookup_transform(
+                    'base_footprint', link, rclpy.time.Time(),
+                    timeout=rclpy.duration.Duration(seconds=0.5))
+                p = t.transform.translation
+                positions[link] = (p.x, p.y, p.z)
+            except Exception:
+                positions[link] = None
+
+        flagged = []
+        for link, pos in positions.items():
+            if pos is None:
+                continue
+            px, py, pz = pos
+            if min_x <= px <= max_x and min_y <= py <= max_y and pz <= TABLE_TOP_Z:
+                flagged.append(f"{link} at ({px:.3f}, {py:.3f}, {pz:.3f})")
+                overlaps_seen.add(link)
+
+        max_vel = 0.0
+        effort_str = []
+        for jname in ARM_JOINTS:
+            state = node.latest_joint_state.get(jname, (None, None, None))
+            if state[1] is not None:
+                max_vel = max(max_vel, abs(state[1]))
+            if state[2] is not None:
+                worst_efforts[jname] = max(worst_efforts[jname], abs(state[2]))
+                if abs(state[2]) > 100.0:
+                    effort_str.append(f"{jname}={state[2]:.1f}Nm")
+
+        line = f"t={elapsed:5.1f}s  max_vel={max_vel:.3f}"
+        if effort_str:
+            line += "  HIGH EFFORT: " + ", ".join(effort_str)
+        if flagged:
+            line += "  OVERLAPS TABLE: " + "; ".join(flagged)
+        print(line)
+
+        if max_vel < 0.05 and elapsed > 6.0:
+            print("Arm settled.")
+            break
+
+    print(f"\nFinal link positions (robot-local frame):")
     for link in ARM_LINKS:
         try:
             t = node.tf_buffer.lookup_transform(
@@ -114,10 +170,13 @@ def main():
             p = t.transform.translation
             inside_xy = min_x <= p.x <= max_x and min_y <= p.y <= max_y
             below_top = p.z <= TABLE_TOP_Z
+            clearance = p.z - TABLE_TOP_Z
             flag = " <-- OVERLAPS TABLE VOLUME" if (inside_xy and below_top) else ""
-            print(f"{link:16s}: ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}){flag}")
+            over = "over table" if inside_xy else "clear of table footprint"
+            print(f"{link:18s}: ({p.x:.3f}, {p.y:.3f}, {p.z:.3f})  "
+                  f"{over}, {clearance:+.3f}m vs table top{flag}")
         except Exception as e:
-            print(f"{link:16s}: TF lookup failed: {e}")
+            print(f"{link:18s}: TF lookup failed: {e}")
 
     print()
     for jname, commanded in zip(ARM_JOINTS, joints):
@@ -126,7 +185,18 @@ def main():
             gap = abs(np.degrees(state[0] - commanded))
             note = "  <-- did NOT reach commanded" if gap > 5.0 else ""
             print(f"  {jname}: commanded={np.degrees(commanded):.1f}deg "
-                  f"real={np.degrees(state[0]):.1f}deg effort={state[2]:.2f}Nm{note}")
+                  f"real={np.degrees(state[0]):.1f}deg effort={state[2]:.2f}Nm "
+                  f"(peak seen {worst_efforts[jname]:.1f}Nm){note}")
+
+    if overlaps_seen:
+        print(f"\nLinks that overlapped the table volume at any point: "
+              f"{', '.join(sorted(overlaps_seen))}")
+    else:
+        print("\nNo arm link's ORIGIN entered the table volume at any point. Note this "
+              "checks link origins, not full mesh extents -- a link whose origin stays "
+              "clear can still have geometry dipping into the table, so a pegged effort "
+              "with no overlap flagged here means the contact is from link geometry "
+              "rather than the origin point.")
 
     node.destroy_node()
     rclpy.shutdown()

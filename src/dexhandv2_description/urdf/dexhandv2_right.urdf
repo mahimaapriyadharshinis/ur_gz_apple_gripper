@@ -855,7 +855,6 @@
     <child link="Index_Tip_1"/>
     <axis xyz="0.087537 0.996161 -0.000428"/>
     <limit effort="100" lower="0.0" upper="1.047198" velocity="100"/>
-    <mimic joint="Index_Flexor" multiplier="1" offset="0"/>
   </joint>
   <joint name="R_Middle_DIP" type="revolute">
     <origin rpy="0 0 0" xyz="0.0 -0.0042 0.03"/>
@@ -863,7 +862,6 @@
     <child link="Midle_Tip_1"/>
     <axis xyz="-0.0 1.0 0.0"/>
     <limit effort="100" lower="0.0" upper="1.047198" velocity="100"/>
-    <mimic joint="Middle_Flexor" multiplier="1" offset="0"/>
   </joint>
   <joint name="R_Ring_DIP" type="revolute">
     <origin rpy="0 0 0" xyz="0.000259 -0.004184 0.030001"/>
@@ -871,7 +869,6 @@
     <child link="Ring_Tip_1"/>
     <axis xyz="-0.08702 0.996207 -0.00031"/>
     <limit effort="100" lower="0.0" upper="1.047198" velocity="100"/>
-    <mimic joint="Ring_Flexor" multiplier="1" offset="0"/>
   </joint>
   <joint name="R_Pinky_DIP" type="revolute">
     <origin rpy="0 0 0" xyz="0.001397 -0.004132 0.029977"/>
@@ -879,7 +876,6 @@
     <child link="Pinky_Tip_1"/>
     <axis xyz="-0.178318 0.983965 0.003854"/>
     <limit effort="100" lower="0.0" upper="1.047198" velocity="100"/>
-    <mimic joint="Pinky_Flexor" multiplier="1" offset="0"/>
   </joint>
   <joint name="R_Thumb_Yaw" type="revolute">
     <origin rpy="0 0 0" xyz="0.042207 0.017744 -0.001358"/>
@@ -908,7 +904,6 @@
     <child link="Thumb_Tip_1"/>
     <axis xyz="0.34773 -0.826541 -0.442622"/>
     <limit effort="100" lower="0.0" upper="1.047198" velocity="100"/>
-    <mimic joint="Thumb_Flexor" multiplier="1" offset="0"/>
   </joint>
   <joint name="R_Index_Yaw" type="revolute">
     <origin rpy="0 0 0" xyz="0.01778 0.029123 0.084894"/>

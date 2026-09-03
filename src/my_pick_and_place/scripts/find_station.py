@@ -12,12 +12,18 @@ from full_layer_grasp import build_chain, solve_ik, world_to_local, ARM_JOINTS
 
 APPLE_WORLD_XY = (1.25, 0.0)
 APPLE_WORLD_Z = 0.44  # apple_table top (0.40) + apple radius (0.04)
-FINGER_LENGTH = 0.164  # must match full_layer_grasp.py's FINGER_LENGTH
+# Real measured fingertip reach (finger_geometry_check.py), not the old flat 0.164m
+# guess -- confirmed directly that the old guess put the grasp height ~6cm higher
+# than where the fingers actually need to be, and that the CORRECT (lower) height
+# causes a real collision (shoulder_lift pinned at 150Nm) at the current station
+# (1.25, -0.90). Sweeping against this real height, not the old one, so any station
+# found here is actually useful for the real problem.
+GRASP_Z_OFFSET = 0.102
 
 
 def pan_mismatch_deg(chain, robot_x, robot_y, robot_yaw):
     x, y = world_to_local(APPLE_WORLD_XY[0], APPLE_WORLD_XY[1], robot_x, robot_y, robot_yaw)
-    grasp_target = [x, y, APPLE_WORLD_Z + FINGER_LENGTH]
+    grasp_target = [x, y, APPLE_WORLD_Z + GRASP_Z_OFFSET]
 
     expected_pan = np.degrees(np.arctan2(y, x))
     result = solve_ik(chain, grasp_target)

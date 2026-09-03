@@ -41,7 +41,24 @@ from full_layer_grasp import (
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
 )
 
-DEFAULT_HEIGHTS = [0.550, 0.560, 0.570, 0.580, 0.590]
+# Measured: the arm bottoms out around wrist z=0.585 -- commanding anything lower
+# just saturates shoulder_lift/wrist_1/wrist_2 and still lands at 0.584-0.590. So
+# only heights at or above that floor are actually testable.
+DEFAULT_HEIGHTS = [0.590, 0.600, 0.610, 0.620]
+
+# Thumb-to-index fingertip distance, measured via TF (finger_geometry_check.py).
+# The hand only opens to 8.73cm and closes to 7.87cm, so an 8.00cm apple leaves just
+# 3.6mm of clearance per side going in, and barely any grip travel once around it.
+HAND_SPAN_OPEN = 0.0873
+HAND_SPAN_CLOSED = 0.0787
+
+# Each apple's real collision radius, straight from its own model.sdf -- they are NOT
+# all the same, and the differences matter a lot against a hand this tight.
+APPLE_RADIUS = {
+    "apple_01": 0.04000, "apple_02": 0.03680, "apple_03": 0.04320, "apple_04": 0.03960,
+    "apple_05": 0.04000, "apple_06": 0.04000, "apple_07": 0.03973, "apple_08": 0.03987,
+    "apple_09": 0.03800, "apple_10": 0.04000,
+}
 FINGERTIP_LINKS = ["Index_Tip_1", "Midle_Tip_1", "Ring_Tip_1", "Pinky_Tip_1", "Thumb_Tip_1"]
 TABLE_TOP_Z = 0.40
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -112,14 +129,20 @@ def apple_pos(node):
 def test_height(node, target_name, wrist_z):
     print(f"\n{'=' * 72}\nWRIST HEIGHT {wrist_z:.3f}\n{'=' * 72}")
 
+    # Stand the robot alongside whichever apple is being tested, rather than always at
+    # apple_06's x. The station's x is what puts the apple within a natural reach; with
+    # it fixed, any other apple sits far off to the side (apple_02 would be 1.34m away
+    # diagonally) and the test would measure that awkward reach instead of the grasp.
+    wx, wy = APPLE_HOME_WORLD_XY[target_name]
+    node.robot_x, node.robot_y, node.robot_yaw = wx, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW
+
     node.reset_everything()
     node.reset_target_apple_position(target_name)
     for _ in range(20):
         rclpy.spin_once(node, timeout_sec=0.1)
     before = apple_pos(node)
 
-    wx, wy = APPLE_HOME_WORLD_XY[target_name]
-    x, y = world_to_local(wx, wy, DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW)
+    x, y = world_to_local(wx, wy, node.robot_x, node.robot_y, node.robot_yaw)
 
     approach = solve_ik(node.chain, [x, y, wrist_z + 0.08])
     grasp = solve_ik(node.chain, [x, y, wrist_z])
@@ -181,8 +204,23 @@ def main():
                if len(sys.argv) > 2 else DEFAULT_HEIGHTS)
 
     print(f"Target {target_name}; testing wrist heights {heights}")
-    print(f"(table top {TABLE_TOP_Z}, apple centre {APPLE_HOME_Z}, "
-          f"apple top {APPLE_HOME_Z + 0.04})")
+    radius = APPLE_RADIUS.get(target_name)
+    if radius:
+        diameter = 2 * radius
+        margin = (HAND_SPAN_OPEN - diameter) / 2.0
+        squeeze = diameter - HAND_SPAN_CLOSED
+        print(f"(table top {TABLE_TOP_Z}, apple centre {APPLE_HOME_Z}, "
+              f"apple top {APPLE_HOME_Z + radius:.3f})")
+        print(f"{target_name} diameter {diameter * 100:.2f}cm vs hand span "
+              f"{HAND_SPAN_OPEN * 100:.2f}cm open / {HAND_SPAN_CLOSED * 100:.2f}cm closed")
+        print(f"  -> {margin * 100:+.2f}cm clearance per side going in, "
+              f"{squeeze * 100:+.2f}cm of squeeze once around it")
+        if margin <= 0:
+            print("  -> WARNING: apple is WIDER than the hand opens; it cannot be "
+                  "enclosed at all at this size.")
+        elif squeeze <= 0:
+            print("  -> WARNING: hand cannot close smaller than this apple, so it can "
+                  "never actually grip it, only touch it.")
 
     rclpy.init()
     node = FullLayerGraspNode()

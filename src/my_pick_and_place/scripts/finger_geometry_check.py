@@ -22,12 +22,15 @@ run:
 """
 import time
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 import tf2_ros
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from full_layer_grasp import FINGER_GROUPS, FINGER_JOINT_NAMES, FINGER_SECONDARY_JOINTS
+from full_layer_grasp import (
+    FINGER_GROUPS, FINGER_JOINT_NAMES, FINGER_SECONDARY_JOINTS, MAX_PITCH_CEILING,
+)
 
 FINGERTIP_LINKS = ["Index_Tip_1", "Midle_Tip_1", "Ring_Tip_1", "Pinky_Tip_1", "Thumb_Tip_1"]
 
@@ -66,6 +69,16 @@ class FingerGeometryCheck(Node):
         self.hand_pub.publish(msg)
 
 
+def fingertip_span(node):
+    """Thumb-to-index fingertip distance -- the hand's actual opposition span, which
+    is what decides whether an object of a given size can be enclosed and squeezed."""
+    a = node.lookup("Index_Tip_1")
+    b = node.lookup("Thumb_Tip_1")
+    if a is None or b is None:
+        return None
+    return float(np.linalg.norm(np.array(a) - np.array(b)))
+
+
 def measure(node, label):
     positions = {}
     for link in FINGERTIP_LINKS:
@@ -100,13 +113,27 @@ def main():
         rclpy.spin_once(node, timeout_sec=0.1)
     time.sleep(1.5)
     open_centroid = measure(node, "open")
+    open_span = fingertip_span(node)
+    if open_span is not None:
+        print(f"thumb-to-index span OPEN: {open_span * 100:.2f}cm  "
+              f"(an apple must be narrower than this to fit between the fingers "
+              f"at all, and wider than the closed span below to actually be gripped)")
 
-    print("\n=== CLOSED (pitch=1.0) ===")
-    node.command_hand(1.0, 2.0)
-    for _ in range(10):
-        rclpy.spin_once(node, timeout_sec=0.1)
-    time.sleep(2.5)
-    closed_centroid = measure(node, "closed")
+    # Measure at FULL closure, not the 1.0 rad used before. The *_Pitch joints allow
+    # up to 1.309 rad, and the earlier 1.0 measurement understated how far the hand can
+    # actually close -- which matters enormously here, because the thumb-to-index span
+    # at full closure is what decides whether an apple can be gripped at all rather
+    # than merely touched.
+    for pitch in (1.0, MAX_PITCH_CEILING):
+        print(f"\n=== CLOSED (pitch={pitch:.3f}) ===")
+        node.command_hand(pitch, 2.0)
+        for _ in range(10):
+            rclpy.spin_once(node, timeout_sec=0.1)
+        time.sleep(2.5)
+        closed_centroid = measure(node, f"closed@{pitch:.2f}")
+        span = fingertip_span(node)
+        if span is not None:
+            print(f"thumb-to-index span at pitch={pitch:.2f}: {span * 100:.2f}cm")
 
     if open_centroid and closed_centroid:
         dx = closed_centroid[0] - open_centroid[0]

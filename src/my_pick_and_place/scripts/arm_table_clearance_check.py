@@ -79,9 +79,25 @@ def main():
         return
     joints, _ = result
 
+    # Wait for the trajectory publisher to actually connect to the controller before
+    # publishing. Confirmed directly: publishing immediately after node creation sent
+    # the command into the void (arm stayed in its spawn pose, all efforts normal,
+    # nothing moved) because ROS2 discovery hadn't finished yet. The normal grasp flow
+    # never hits this because reset_everything()'s teleport + sleeps give discovery
+    # plenty of time before the first arm command.
+    print("Waiting for the arm controller to connect...")
+    for _ in range(100):
+        rclpy.spin_once(node, timeout_sec=0.1)
+        if node.arm_pub.get_subscription_count() > 0:
+            break
+    print(f"arm_pub subscriber count: {node.arm_pub.get_subscription_count()}")
+    if node.arm_pub.get_subscription_count() == 0:
+        print("WARNING: no subscriber on the arm trajectory topic -- the command will "
+              "go nowhere. Is the simulation actually running with controllers active?")
+
     print("Commanding arm toward the grasp height (may peg at max effort -- that's expected)...")
     node.send_arm_trajectory(joints, 4.0)
-    node.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=15.0, min_wait=4.0)
+    node.wait_for_settled(ARM_JOINTS, vel_threshold=0.05, timeout=15.0, min_wait=5.0)
     time.sleep(1.0)
     for _ in range(10):
         rclpy.spin_once(node, timeout_sec=0.1)
@@ -103,10 +119,14 @@ def main():
         except Exception as e:
             print(f"{link:16s}: TF lookup failed: {e}")
 
-    for jname in ARM_JOINTS:
+    print()
+    for jname, commanded in zip(ARM_JOINTS, joints):
         state = node.latest_joint_state.get(jname, (None, None, None))
         if state[2] is not None:
-            print(f"  {jname}: real={np.degrees(state[0]):.1f}deg effort={state[2]:.2f}Nm")
+            gap = abs(np.degrees(state[0] - commanded))
+            note = "  <-- did NOT reach commanded" if gap > 5.0 else ""
+            print(f"  {jname}: commanded={np.degrees(commanded):.1f}deg "
+                  f"real={np.degrees(state[0]):.1f}deg effort={state[2]:.2f}Nm{note}")
 
     node.destroy_node()
     rclpy.shutdown()

@@ -26,6 +26,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 import tf2_ros
+from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from full_layer_grasp import (
@@ -41,6 +42,18 @@ class FingerGeometryCheck(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.hand_pub = self.create_publisher(JointTrajectory, '/dexhand_controller/joint_trajectory', 10)
+        # Needed so waits can watch the joints themselves settle, rather than sleeping
+        # a fixed time and hoping (which read stale positions -- see
+        # wait_for_fingers_settled).
+        self.latest_joint_state = {}
+        self.create_subscription(JointState, '/joint_states', self._joint_cb, 10)
+
+    def _joint_cb(self, msg):
+        for i, name in enumerate(msg.name):
+            pos = msg.position[i] if i < len(msg.position) else None
+            vel = msg.velocity[i] if i < len(msg.velocity) else None
+            eff = msg.effort[i] if i < len(msg.effort) else None
+            self.latest_joint_state[name] = (pos, vel, eff)
 
     def lookup(self, link):
         try:
@@ -67,6 +80,34 @@ class FingerGeometryCheck(Node):
         point.time_from_start.sec = int(duration_sec)
         msg.points = [point]
         self.hand_pub.publish(msg)
+
+
+def wait_for_fingers_settled(node, timeout=25.0):
+    """Spin until the finger joints stop moving.
+
+    Two bugs this replaces, both confirmed directly: the old code used time.sleep()
+    to wait, which does NOT spin the node -- so the TF buffer never updated and every
+    post-command measurement silently returned the stale OPEN positions, making the
+    hand look frozen when it was moving fine. And a fixed wait is too short anyway:
+    under Gazebo's GUI the sim runs well below real-time, so joints were still
+    travelling when sampled (they read ~52% of the commanded angle).
+    """
+    start = time.time()
+    last = None
+    while time.time() - start < timeout:
+        for _ in range(5):
+            rclpy.spin_once(node, timeout_sec=0.1)
+        vels = [abs(node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))[1] or 0.0)
+                for g in FINGER_GROUPS]
+        positions = [node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))[0] for g in FINGER_GROUPS]
+        if vels and max(vels) < 0.02 and last is not None:
+            # Require the positions to also be unchanged, since velocity can read zero
+            # in the gap between trajectory segments.
+            if all(a is not None and b is not None and abs(a - b) < 0.002
+                   for a, b in zip(positions, last)):
+                return True
+        last = positions
+    return False
 
 
 def fingertip_span(node):
@@ -108,10 +149,8 @@ def main():
         rclpy.spin_once(node, timeout_sec=0.2)
 
     print("\n=== OPEN ===")
-    node.command_hand(0.0, 1.0)
-    for _ in range(10):
-        rclpy.spin_once(node, timeout_sec=0.1)
-    time.sleep(1.5)
+    node.command_hand(0.0, 2.0)
+    wait_for_fingers_settled(node)
     open_centroid = measure(node, "open")
     open_span = fingertip_span(node)
     if open_span is not None:
@@ -127,9 +166,11 @@ def main():
     for pitch in (1.0, MAX_PITCH_CEILING):
         print(f"\n=== CLOSED (pitch={pitch:.3f}) ===")
         node.command_hand(pitch, 2.0)
-        for _ in range(10):
-            rclpy.spin_once(node, timeout_sec=0.1)
-        time.sleep(2.5)
+        settled = wait_for_fingers_settled(node)
+        actual = [node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
+                  for g in FINGER_GROUPS]
+        shown = ", ".join("%.3f" % a for a in actual if a is not None)
+        print(f"(settled={settled}; real pitch angles: {shown})")
         closed_centroid = measure(node, f"closed@{pitch:.2f}")
         span = fingertip_span(node)
         if span is not None:

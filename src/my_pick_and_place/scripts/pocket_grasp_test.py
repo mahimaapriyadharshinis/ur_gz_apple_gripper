@@ -62,6 +62,10 @@ PRESHAPES = [0.0, 0.5, 0.7, 0.9]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
 
+# How far to raise the wrist after closing. Contact proves the fingers reached the
+# apple; only lifting proves the grip actually holds it.
+LIFT_HEIGHT = 0.15
+
 
 def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):
     start = time.time()
@@ -180,11 +184,32 @@ def attempt(node, target_name, preshape):
 
     for _ in range(10):
         rclpy.spin_once(node, timeout_sec=0.1)
-    after = apple_xyz(node)
-    moved = float(np.linalg.norm(after - before)) if before is not None and after is not None else None
-    lifted = float(after[2] - before[2]) if before is not None and after is not None else None
+    after_close = apple_xyz(node)
+    moved = (float(np.linalg.norm(after_close - before))
+             if before is not None and after_close is not None else None)
     if moved is not None:
-        print(f"  apple moved {moved:.3f}m (height change {lifted:+.3f}m)")
+        print(f"  apple moved {moved:.3f}m while closing")
+
+    # Actually LIFT. Contact alone proves the fingers reached the apple; only raising
+    # it proves the grip holds. Keeping the fingers commanded where they stopped, so
+    # the hold is maintained through the lift rather than relaxing.
+    lifted = None
+    lift_target = list(wrist_target + np.array([0, 0, LIFT_HEIGHT]))
+    lift = solve_ik(node.chain, lift_target)
+    if lift is None:
+        print("  lift target UNREACHABLE -- cannot test the hold")
+    else:
+        print(f"  lifting {LIFT_HEIGHT:.2f}m...")
+        node.send_arm_trajectory(lift[0], 3.0)
+        settle(node, 15.0)
+        for _ in range(10):
+            rclpy.spin_once(node, timeout_sec=0.1)
+        after_lift = apple_xyz(node)
+        if before is not None and after_lift is not None:
+            lifted = float(after_lift[2] - before[2])
+            held = lifted > LIFT_HEIGHT * 0.5
+            print(f"  apple height change after lift: {lifted:+.3f}m "
+                  f"({'HELD' if held else 'dropped/slipped'})")
 
     return {"preshape": preshape, "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
@@ -220,6 +245,16 @@ def main():
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
         print(f"{r['preshape']:9.2f} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
+
+    held = [r for r in results
+            if r.get("ok") and r.get("lifted") is not None
+            and r["lifted"] > LIFT_HEIGHT * 0.5]
+    if held:
+        b = max(held, key=lambda r: r["contacts"])
+        print(f"
+LIFTED: pre-shape {b['preshape']:.2f} held the apple through a "
+              f"{LIFT_HEIGHT:.2f}m lift with {b['contacts']}/5 fingers. That is a "
+              f"complete grasp.")
 
     best = max((r for r in results if r.get("ok")),
                key=lambda r: (r["contacts"], max(r["peak"].values())), default=None)

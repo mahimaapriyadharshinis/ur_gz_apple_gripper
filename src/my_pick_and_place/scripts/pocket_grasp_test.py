@@ -85,6 +85,10 @@ REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
 # apple; only lifting proves the grip actually holds it.
 LIFT_HEIGHT = 0.15
 
+# How far back along the hand's forward axis to start, so the fingers move in
+# beside the apple rather than being lowered through it.
+APPROACH_BACKOFF = 0.16
+
 # How close the apple must still be to the wrist afterwards to count as held.
 # Roughly the hand's own size -- further than this and it is not in the hand.
 HOLD_DISTANCE = 0.20
@@ -205,8 +209,20 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
     print(f"  wrist target ({wrist_target[0]:.3f}, {wrist_target[1]:.3f}, "
           f"{wrist_target[2]:.3f})")
 
-    approach = solve_ik(node.chain, list(wrist_target + np.array([0, 0, 0.09])),
-                        target_rotation=rot)
+    # Approach from BESIDE the apple at grasp height, not from above it.
+    #
+    # Measured directly: essentially all the apple's movement happens during the
+    # descent, before a single finger moves -- 0.034m, 1.260m, 0.770m, 0.672m during
+    # the descent versus 0.000-0.113m during the closing itself. With the palm facing
+    # down the fingers stick out horizontally 0.164m while the wrist sits 0.083m behind
+    # the apple, so they hang directly over it and lowering the hand rakes them
+    # straight through it.
+    #
+    # Backing off along the hand's own forward axis and then moving in horizontally
+    # lets the fingers arrive alongside the apple instead of on top of it.
+    back_off = wrist_rot @ np.array([0.0, 0.0, -APPROACH_BACKOFF])
+    approach_pos = wrist_target + back_off + np.array([0.0, 0.0, 0.02])
+    approach = solve_ik(node.chain, list(approach_pos), target_rotation=rot)
     grasp = solve_ik(node.chain, list(wrist_target), target_rotation=rot)
     if approach is None or grasp is None:
         print("  UNREACHABLE")
@@ -219,6 +235,9 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
     node.command_fingers({g: preshape for g in FINGER_GROUPS}, 1.5,
                          thumb_yaw=thumb_yaw, thumb_roll=THUMB_GRASP_ROLL)
     settle(node, 6.0, joints=[f"{g}_Pitch" for g in FINGER_GROUPS], thresh=0.02)
+    print(f"  approaching from ({approach_pos[0]:.3f}, {approach_pos[1]:.3f}, "
+          f"{approach_pos[2]:.3f}) -- {APPROACH_BACKOFF:.2f}m back, then moving in "
+          f"sideways rather than descending onto the apple")
     node.send_arm_trajectory(approach[0], 3.5)
     settle(node, 12.0)
     node.send_arm_trajectory(grasp[0], 3.0)

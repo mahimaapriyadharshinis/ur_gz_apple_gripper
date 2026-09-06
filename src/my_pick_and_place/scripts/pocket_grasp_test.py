@@ -46,7 +46,24 @@ from full_layer_grasp import (
 # Fingertip centroid at full closure, in the hand's own frame, measured via TF with
 # the fingertip joints working. This is the centre of the pocket the fingers curl
 # into -- where an object has to be to end up gripped rather than brushed.
-CLOSED_CENTROID_HAND_FRAME = np.array([0.0634, -0.0056, 0.0834])
+_CLOSED_CENTROID_MEASURED = np.array([0.0634, -0.0056, 0.0834])
+
+# Aiming the measured closed-fingertip centroid at the apple puts the wrist only
+# 0.105m from the apple's CENTRE. With a 0.0555m radius the apple's surface then
+# reaches to within 0.05m of the wrist -- and the DexHand's palm body is roughly
+# 0.08-0.10m across, so the palm is driven straight into the apple. In hand
+# coordinates the apple would occupy from z=0.028 outward while the palm sits at
+# z=0: they overlap.
+#
+# That matches the measurement exactly: an attempt with the wrist at err=0.000m and
+# the palm 0deg from parallel -- perfect on both counts -- still knocked the apple
+# 0.140m during the descent, before any finger moved. Position and orientation were
+# never the problem; the target point itself was inside the hand.
+#
+# Pushing the aim point further out along the hand's forward axis puts the apple in
+# the open span between fingers and thumb instead of against the palm.
+PALM_CLEARANCE = 0.045
+CLOSED_CENTROID_HAND_FRAME = _CLOSED_CENTROID_MEASURED + np.array([0.0, 0.0, PALM_CLEARANCE])
 
 # Pre-shape: how far the fingers are curled BEFORE descending.
 #

@@ -112,8 +112,20 @@ def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):
 # before the other four got near it, which is why every attempt stops at 1/5.
 # Smaller steps checked far more often stop a finger when it first feels the apple
 # instead of long after.
-CLOSE_STEP = 0.015
-CHECKS_PER_STEP = 2
+# Slowed further still. Even at 0.015 rad steps the force jumped straight from 0.044Nm
+# (nothing) to 36-40Nm (a hard slam) with nothing in between -- measured with R_Pinky
+# at 36.840 and 40.308 while every other finger sat at ~0.99Nm. There is no gentle
+# middle, so the finger is already driving hard into the apple by the time contact is
+# noticed, and it shoves it away. Smaller steps, checked more often, with a longer
+# command window so the joint tracks rather than lunges.
+CLOSE_STEP = 0.006
+CHECKS_PER_STEP = 5
+STEP_COMMAND_TIME = 0.20
+
+# The four fingers idle at 0.043-0.046Nm, so anything meaningfully above that is real
+# contact. The old 0.12Nm threshold sat far enough above the noise that a finger had
+# already begun pushing before it tripped.
+CONTACT_THRESHOLD = 0.075
 
 
 def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
@@ -126,15 +138,15 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
         for g in FINGER_GROUPS:
             if not contacted[g]:
                 current[g] = min(current[g] + CLOSE_STEP, MAX_PITCH_CEILING)
-        node.command_fingers(current, 0.08, thumb_yaw=thumb_yaw,
+        node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
                              thumb_roll=THUMB_GRASP_ROLL)
         for _ in range(CHECKS_PER_STEP):
-            rclpy.spin_once(node, timeout_sec=0.05)
+            rclpy.spin_once(node, timeout_sec=0.08)
             for g in FINGER_GROUPS:
                 _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
                 eff = abs(eff or 0.0)
                 peak[g] = max(peak[g], eff)
-                if eff > EFFORT_CONTACT_THRESHOLD and not contacted[g]:
+                if eff > CONTACT_THRESHOLD and not contacted[g]:
                     # Force alone cannot tell the apple from the table -- a run with
                     # fingers jammed in the tabletop reported 4/5 "contacts" at
                     # saturated 100Nm while the apple never moved. Only count it if

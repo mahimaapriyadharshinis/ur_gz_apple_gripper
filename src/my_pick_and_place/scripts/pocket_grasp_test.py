@@ -251,8 +251,7 @@ def main():
             and r["lifted"] > LIFT_HEIGHT * 0.5]
     if held:
         b = max(held, key=lambda r: r["contacts"])
-        print(f"
-LIFTED: pre-shape {b['preshape']:.2f} held the apple through a "
+        print(f"\nLIFTED: pre-shape {b['preshape']:.2f} held the apple through a "
               f"{LIFT_HEIGHT:.2f}m lift with {b['contacts']}/5 fingers. That is a "
               f"complete grasp.")
 

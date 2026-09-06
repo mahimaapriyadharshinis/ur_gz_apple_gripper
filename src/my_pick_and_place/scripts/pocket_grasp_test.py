@@ -265,6 +265,21 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
               f"{tilt:.0f}deg from straight down "
               f"({'PARALLEL to ground' if tilt < 25 else 'NOT parallel'})")
 
+    # Split the measurement: how far did the apple move during the DESCENT, before a
+    # single finger moved? The fingers read 0.044Nm (baseline noise) while the apple
+    # moved up to 0.8m, so something that is not a finger joint is hitting it -- most
+    # likely the hand's own body on the way down. Attributing that to "closing" hid it.
+    for _ in range(10):
+        rclpy.spin_once(node, timeout_sec=0.1)
+    after_descent = apple_xyz(node)
+    if before is not None and after_descent is not None:
+        moved_descent = float(np.linalg.norm(after_descent - before))
+        print(f"  apple moved {moved_descent:.3f}m DURING THE DESCENT "
+              f"(before any finger moved)")
+        if moved_descent > 0.02:
+            print("    -> the apple is being knocked by the arm/hand body, not the "
+                  "fingers; closing never gets a chance")
+
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_local,
         radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=thumb_yaw)
@@ -278,7 +293,11 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
     moved = (float(np.linalg.norm(after_close - before))
              if before is not None and after_close is not None else None)
     if moved is not None:
-        print(f"  apple moved {moved:.3f}m while closing")
+        during_closing = (float(np.linalg.norm(after_close - after_descent))
+                          if after_descent is not None else None)
+        extra = (f" (of which {during_closing:.3f}m during closing itself)"
+                 if during_closing is not None else "")
+        print(f"  apple moved {moved:.3f}m total{extra}")
 
     # Actually LIFT. Contact alone proves the fingers reached the apple; only raising
     # it proves the grip holds. Keeping the fingers commanded where they stopped, so

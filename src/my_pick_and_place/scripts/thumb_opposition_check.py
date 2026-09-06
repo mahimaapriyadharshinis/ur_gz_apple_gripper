@@ -125,9 +125,14 @@ def main():
         # still far enough from the fingers to have an apple between them.
         usable = [r for r in rows if r[3] > 0.06]
         best = min(usable or rows, key=lambda r: r[2])
+        # Look the default up rather than indexing a fixed row -- rows can now be
+        # skipped when the thumb fails to reach a commanded angle, so a fixed index
+        # would either crash or silently report the wrong row.
+        default = next((r for r in rows if abs(r[0]) < 1e-6 and abs(r[1]) < 1e-6), None)
+        was = f"{default[2]:.4f}m" if default else "not measured"
         print(f"\nLeast protruding while still {best[3]:.3f}m from the fingers: "
-              f"yaw={best[0]:.2f} roll={best[1]:.2f} (protrudes {best[2]:.4f}m, "
-              f"was {rows[len(ROLLS) * 2 + 1][2]:.4f}m at yaw=0 roll=0)")
+              f"yaw={best[0]:.2f} roll={best[1]:.2f} (protrudes {best[2]:.4f}m; "
+              f"at the never-commanded default yaw=0 roll=0 it was {was})")
         print("Lower protrusion means the thumb stops hitting the table first; the gap "
               "must stay wider than an apple radius or there is nowhere to hold it.")
 

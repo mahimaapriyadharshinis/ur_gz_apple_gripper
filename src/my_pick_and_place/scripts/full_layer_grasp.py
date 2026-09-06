@@ -54,6 +54,18 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
+# Thumb position relative to the palm, measured with thumb_opposition_check.py.
+# R_Thumb_Yaw/Roll were never commanded before, leaving the thumb at yaw=0 where its
+# tip protrudes 0.1185m along the palm normal. With the palm facing down at the grasp
+# height (wrist 0.519) that puts the thumb tip at 0.4005 -- the tabletop is 0.400, so
+# it was resting ON the table, which is why it read 15.3Nm while the four fingers read
+# 0.38-0.40Nm and the hand closed on empty air. yaw=-0.50 pulls it in to 0.0946m
+# (2.4cm of clearance) while the thumb-to-finger gap stays 0.135m, still wider than
+# the 0.111m apple. Roll makes almost no difference (0.0946 vs 0.0963 across its full
+# range), so it stays neutral.
+THUMB_GRASP_YAW = -0.50
+THUMB_GRASP_ROLL = 0.0
+
 
 def compute_grasp_reward(contacted, max_effort_seen, steps_taken, lift_gain):
     """Score one closing attempt, for the learned-closing training loop. Built from

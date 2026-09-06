@@ -40,6 +40,7 @@ from full_layer_grasp import (
     world_to_local, solve_ik, hand_fk, ARM_JOINTS, FINGER_GROUPS,
     PALM_DOWN_ROTATION,
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
+    THUMB_GRASP_YAW, THUMB_GRASP_ROLL,
 )
 
 # Fingertip centroid at full closure, in the hand's own frame, measured via TF with
@@ -112,7 +113,8 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None):
         for g in FINGER_GROUPS:
             if not contacted[g]:
                 current[g] = min(current[g] + CLOSE_STEP, MAX_PITCH_CEILING)
-        node.command_fingers(current, 0.08)
+        node.command_fingers(current, 0.08, thumb_yaw=THUMB_GRASP_YAW,
+                             thumb_roll=THUMB_GRASP_ROLL)
         for _ in range(CHECKS_PER_STEP):
             rclpy.spin_once(node, timeout_sec=0.05)
             for g in FINGER_GROUPS:
@@ -190,7 +192,8 @@ def attempt(node, target_name, palm_down, preshape):
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
     # out on the table first.
-    node.command_fingers({g: preshape for g in FINGER_GROUPS}, 1.5)
+    node.command_fingers({g: preshape for g in FINGER_GROUPS}, 1.5,
+                         thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
     settle(node, 6.0, joints=[f"{g}_Pitch" for g in FINGER_GROUPS], thresh=0.02)
     node.send_arm_trajectory(approach[0], 3.5)
     settle(node, 12.0)

@@ -35,7 +35,7 @@ import numpy as np
 import rclpy
 
 from full_layer_grasp import (
-    FullLayerGraspNode, APPLE_HOME_WORLD_XY, APPLE_HOME_Z,
+    FullLayerGraspNode, APPLE_HOME_WORLD_XY, apple_home_z, APPLE_RADIUS,
     DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW,
     world_to_local, solve_ik, hand_fk, ARM_JOINTS, FINGER_GROUPS,
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
@@ -132,7 +132,7 @@ def attempt(node, target_name, preshape):
     before = apple_xyz(node)
 
     x, y = world_to_local(wx, wy, node.robot_x, node.robot_y, node.robot_yaw)
-    apple_local = np.array([x, y, APPLE_HOME_Z])
+    apple_local = np.array([x, y, apple_home_z(target_name)])
 
     # Pass 1: a rough solve just to learn which way the wrist ends up facing, since the
     # pocket offset is expressed in the hand's own frame and has to be rotated into the

@@ -29,7 +29,7 @@ import numpy as np
 import rclpy
 
 from full_layer_grasp import (
-    FullLayerGraspNode, APPLE_HOME_WORLD_XY, APPLE_HOME_Z,
+    FullLayerGraspNode, APPLE_HOME_WORLD_XY, apple_home_z, APPLE_RADIUS,
     DELIVERY_ROBOT_X, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW,
     world_to_local, solve_ik, ARM_JOINTS, FINGER_GROUPS,
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
@@ -54,13 +54,8 @@ DEFAULT_HEIGHTS = [0.570, 0.585, 0.600, 0.615, 0.630]
 HAND_SPAN_OPEN = 0.1538
 HAND_SPAN_CLOSED = 0.0911
 
-# Each apple's real collision radius, straight from its own model.sdf -- they are NOT
-# all the same, and the differences matter a lot against a hand this tight.
-APPLE_RADIUS = {
-    "apple_01": 0.04000, "apple_02": 0.03680, "apple_03": 0.04320, "apple_04": 0.03960,
-    "apple_05": 0.04000, "apple_06": 0.04000, "apple_07": 0.03973, "apple_08": 0.03987,
-    "apple_09": 0.03800, "apple_10": 0.04000,
-}
+# Radii now live in full_layer_grasp.py (APPLE_RADIUS) so there is one source of
+# truth; they were duplicated here and went stale after the apples were resized.
 FINGERTIP_LINKS = ["Index_Tip_1", "Midle_Tip_1", "Ring_Tip_1", "Pinky_Tip_1", "Thumb_Tip_1"]
 TABLE_TOP_Z = 0.40
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -211,8 +206,9 @@ def main():
         diameter = 2 * radius
         margin = (HAND_SPAN_OPEN - diameter) / 2.0
         squeeze = diameter - HAND_SPAN_CLOSED
-        print(f"(table top {TABLE_TOP_Z}, apple centre {APPLE_HOME_Z}, "
-              f"apple top {APPLE_HOME_Z + radius:.3f})")
+        centre = apple_home_z(target_name)
+        print(f"(table top {TABLE_TOP_Z}, apple centre {centre:.3f}, "
+              f"apple top {centre + radius:.3f})")
         print(f"{target_name} diameter {diameter * 100:.2f}cm vs hand span "
               f"{HAND_SPAN_OPEN * 100:.2f}cm open / {HAND_SPAN_CLOSED * 100:.2f}cm closed")
         print(f"  -> {margin * 100:+.2f}cm clearance per side going in, "

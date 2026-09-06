@@ -4,11 +4,11 @@
     <pose>0 0 0 0 0 0</pose>
     <link name="link">
       <inertial>
-        <mass>0.19</mass>
+        <mass>0.55445</mass>
         <inertia>
-          <ixx>0.00012165</ixx>
-          <iyy>0.00012165</iyy>
-          <izz>0.00011678</izz>
+          <ixx>0.00071048</ixx>
+          <iyy>0.00071048</iyy>
+          <izz>0.00071048</izz>
           <ixy>0</ixy>
           <ixz>0</ixz>
           <iyz>0</iyz>
@@ -18,20 +18,20 @@
       <collision name="collision">
         <geometry>
           <sphere>
-            <radius>0.03973</radius>
+            <radius>0.05660</radius>
           </sphere>
         </geometry>
         <surface>
           <friction>
             <ode>
-              <mu>1.1</mu>
-              <mu2>1.1</mu2>
+              <mu>0.95</mu>
+              <mu2>0.95</mu2>
             </ode>
           </friction>
           <contact>
             <ode>
-              <kp>100000.0</kp>
-              <kd>1.0</kd>
+              <kp>250000.0</kp>
+              <kd>0.7</kd>
               <min_depth>0.001</min_depth>
             </ode>
           </contact>
@@ -42,7 +42,7 @@
         <geometry>
           <mesh>
             <uri>model://apple_07/meshes/apple_07_v4.obj</uri>
-            <scale>0.03920 0.03920 0.04080</scale>
+            <scale>0.05660 0.05660 0.05660</scale>
           </mesh>
         </geometry>
         <material>

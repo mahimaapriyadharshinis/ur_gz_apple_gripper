@@ -114,7 +114,28 @@ CRATE_LOCAL_Z = 0.08
 # as "home" if an earlier run was interrupted after nudging the apple but before that
 # nudge was big enough to trip the corruption sanity check.
 APPLE_HOME_WORLD_XY = {f"apple_{i:02d}": (0.25 * (i - 1), 0.00) for i in range(1, 11)}
-APPLE_HOME_Z = 0.440
+# Each apple's real collision radius, straight from its own model.sdf. They are
+# deliberately all different, and all sized ABOVE the hand's 9.11cm closed span --
+# measured directly, the hand cannot close tighter than that, so the original
+# 7.36-8.64cm apples could never be gripped by any strategy, only brushed.
+APPLE_RADIUS = {
+    "apple_01": 0.0500, "apple_02": 0.0511, "apple_03": 0.0522, "apple_04": 0.0533,
+    "apple_05": 0.0544, "apple_06": 0.0555, "apple_07": 0.0566, "apple_08": 0.0577,
+    "apple_09": 0.0588, "apple_10": 0.0600,
+}
+TABLE_TOP_Z = 0.400
+
+
+def apple_home_z(target_name):
+    """Resting centre height of an apple sitting on the table: its own radius above
+    the table top. This is per-apple now -- a single constant was fine when every
+    apple was 0.04m, but the radii differ by up to 1cm, which is a quarter of the
+    grasp tolerance."""
+    return TABLE_TOP_Z + APPLE_RADIUS.get(target_name, 0.0555)
+
+
+# Kept for callers that just want a representative height; prefer apple_home_z(name).
+APPLE_HOME_Z = TABLE_TOP_Z + 0.0555
 
 
 def local_to_world(x_local, y_local, robot_x, robot_y, robot_yaw):
@@ -619,7 +640,7 @@ class FullLayerGraspNode(Node):
                 f"[Apple reset] No known spawn position for {target_name} -- skipping reset.")
             return
         hx, hy = APPLE_HOME_WORLD_XY[target_name]
-        self.teleport_model(target_name, hx, hy, APPLE_HOME_Z, settle_sec=1.0)
+        self.teleport_model(target_name, hx, hy, apple_home_z(target_name), settle_sec=1.0)
 
     def reset_everything(self):
         self.get_logger().info("=== RESET: base position ===")

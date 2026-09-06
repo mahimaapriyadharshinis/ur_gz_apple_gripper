@@ -32,7 +32,7 @@ import numpy as np
 import rclpy
 
 from full_layer_grasp import (
-    FullLayerGraspNode, APPLE_HOME_WORLD_XY, APPLE_HOME_Z,
+    FullLayerGraspNode, APPLE_HOME_WORLD_XY, apple_home_z,
     DELIVERY_ROBOT_X, DELIVERY_ROBOT_YAW,
     world_to_local, solve_ik, ARM_JOINTS, FINGER_GROUPS,
 )
@@ -131,7 +131,7 @@ def test_station(node, target_name, robot_y):
 
     wx, wy = APPLE_HOME_WORLD_XY[target_name]
     x, y = world_to_local(wx, wy, DELIVERY_ROBOT_X, robot_y, DELIVERY_ROBOT_YAW)
-    grasp_target = [x, y, APPLE_HOME_Z + GRASP_Z_OFFSET]
+    grasp_target = [x, y, apple_home_z(target_name) + GRASP_Z_OFFSET]
 
     result = solve_ik(node.chain, grasp_target)
     if result is None:

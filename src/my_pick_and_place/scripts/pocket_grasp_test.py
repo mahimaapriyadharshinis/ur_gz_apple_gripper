@@ -64,11 +64,19 @@ CLOSED_CENTROID_HAND_FRAME = np.array([0.0634, -0.0056, 0.0834])
 # the palm faces the table and the fingers curl up under the apple; without it only
 # the wrist axis is constrained and the palm's roll is random, which is why identical
 # commands gave 5/5 contacts one run and 1/5 the next.
+# (palm_down, preshape, thumb_yaw).
+#
+# thumb_yaw was fixed at -0.50 because that pulls the thumb closest in and gives it
+# the most table clearance (protrudes 0.0946m vs 0.1229m at +0.50). But it also
+# gives the LEAST room between thumb and fingers -- 0.135m against 0.179m at +0.50 --
+# and the apple is 0.111m across. Optimising for clearance quietly optimised against
+# having anywhere to put the apple, so this sweeps the trade-off with real grasps
+# rather than assuming which end matters more.
 CASES = [
-    (False, 0.0),   # baseline: what we have been running all along
-    (True, 0.0),
-    (True, 0.3),
-    (True, 0.5),
+    (True, 0.3, -0.50),   # most table clearance, tightest grasp space
+    (True, 0.3, 0.0),
+    (True, 0.3, 0.50),    # most grasp space, least table clearance
+    (True, 0.0, 0.50),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -104,7 +112,8 @@ CLOSE_STEP = 0.015
 CHECKS_PER_STEP = 2
 
 
-def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None):
+def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
+                      thumb_yaw=THUMB_GRASP_YAW):
     contacted = {g: False for g in FINGER_GROUPS}
     peak = {g: 0.0 for g in FINGER_GROUPS}
     current = {g: start_pitch for g in FINGER_GROUPS}
@@ -113,7 +122,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None):
         for g in FINGER_GROUPS:
             if not contacted[g]:
                 current[g] = min(current[g] + CLOSE_STEP, MAX_PITCH_CEILING)
-        node.command_fingers(current, 0.08, thumb_yaw=THUMB_GRASP_YAW,
+        node.command_fingers(current, 0.08, thumb_yaw=thumb_yaw,
                              thumb_roll=THUMB_GRASP_ROLL)
         for _ in range(CHECKS_PER_STEP):
             rclpy.spin_once(node, timeout_sec=0.05)
@@ -147,7 +156,7 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, palm_down, preshape):
+def attempt(node, target_name, palm_down, preshape, thumb_yaw):
     label = "palm-DOWN" if palm_down else "free-roll (baseline)"
     print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
     rot = PALM_DOWN_ROTATION if palm_down else None
@@ -183,7 +192,8 @@ def attempt(node, target_name, palm_down, preshape):
                      target_rotation=rot)
     if rough is None:
         print("  rough solve UNREACHABLE")
-        return {"preshape": preshape, "palm_down": palm_down, "ok": False}
+        return {"preshape": preshape, "palm_down": palm_down,
+            "thumb_yaw": thumb_yaw, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
     offset_local = wrist_rot @ CLOSED_CENTROID_HAND_FRAME
@@ -200,13 +210,14 @@ def attempt(node, target_name, palm_down, preshape):
     grasp = solve_ik(node.chain, list(wrist_target), target_rotation=rot)
     if approach is None or grasp is None:
         print("  UNREACHABLE")
-        return {"preshape": preshape, "palm_down": palm_down, "ok": False}
+        return {"preshape": preshape, "palm_down": palm_down,
+            "thumb_yaw": thumb_yaw, "ok": False}
 
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
     # out on the table first.
     node.command_fingers({g: preshape for g in FINGER_GROUPS}, 1.5,
-                         thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
+                         thumb_yaw=thumb_yaw, thumb_roll=THUMB_GRASP_ROLL)
     settle(node, 6.0, joints=[f"{g}_Pitch" for g in FINGER_GROUPS], thresh=0.02)
     node.send_arm_trajectory(approach[0], 3.5)
     settle(node, 12.0)
@@ -256,7 +267,7 @@ def attempt(node, target_name, palm_down, preshape):
 
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_local,
-        radius=APPLE_RADIUS.get(target_name, 0.0555))
+        radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=thumb_yaw)
     n = sum(contacted.values())
     print(f"  fingers contacted: {n}/5")
     print("  peak efforts: " + ", ".join("%s=%.3f" % (g, peak[g]) for g in FINGER_GROUPS))
@@ -311,8 +322,8 @@ def attempt(node, target_name, palm_down, preshape):
             if not held:
                 lifted = None
 
-    return {"preshape": preshape, "palm_down": palm_down, "ok": True,
-            "contacts": n, "peak": peak,
+    return {"preshape": preshape, "palm_down": palm_down,
+            "thumb_yaw": thumb_yaw, "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 
 
@@ -334,19 +345,19 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    results = [attempt(node, target_name, pd, ps) for pd, ps in CASES]
+    results = [attempt(node, target_name, pd, ps, ty) for pd, ps, ty in CASES]
 
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            nm = ('palm-down' if r['palm_down'] else 'free-roll') + f" ps={r['preshape']:.1f}"
+            nm = f"ps={r['preshape']:.1f} yaw={r['thumb_yaw']:+.2f}"
             print(f"{nm:>22} {'UNREACHABLE':>9}")
             continue
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = ('palm-down' if r['palm_down'] else 'free-roll') + f" ps={r['preshape']:.1f}"
+        nm = f"ps={r['preshape']:.1f} yaw={r['thumb_yaw']:+.2f}"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

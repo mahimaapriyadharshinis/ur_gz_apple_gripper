@@ -739,6 +739,41 @@ class FullLayerGraspNode(Node):
         if settle_sec:
             time.sleep(settle_sec)
 
+    def respawn_model(self, model_name, x, y, z, settle_sec=2.0):
+        """Delete the model and create it again at rest.
+
+        Teleporting only sets POSITION, never velocity, so an apple that is already
+        moving keeps its momentum straight through the reset. Measured directly: an
+        apple moving 1.2m between samples (about 2.4 m/s) was repositioned six times
+        in a row and left every time -- "would not settle" -- because each teleport
+        just moved a still-flying object back to the right spot. Removing the model and
+        creating it fresh is the only way to actually zero the velocity.
+        """
+        # Built up in pieces rather than one deeply-nested f-string: the request needs
+        # double quotes inside single quotes inside the shell command, which is very
+        # easy to get subtly wrong.
+        remove_req = 'name: "%s" type: MODEL' % model_name
+        subprocess.run(
+            "ign service -s /world/apple_world/remove "
+            "--reqtype ignition.msgs.Entity --reptype ignition.msgs.Boolean "
+            "--timeout 3000 --req '%s'" % remove_req,
+            shell=True, capture_output=True, text=True)
+        time.sleep(0.5)
+
+        create_req = (
+            'sdf_filename: "model://%s" name: "%s" '
+            'pose: {position: {x: %f y: %f z: %f}}' % (model_name, model_name, x, y, z))
+        result = subprocess.run(
+            "ign service -s /world/apple_world/create "
+            "--reqtype ignition.msgs.EntityFactory --reptype ignition.msgs.Boolean "
+            "--timeout 5000 --req '%s'" % create_req,
+            shell=True, capture_output=True, text=True)
+        self.get_logger().info(
+            f"Respawn {model_name} at ({x:.3f}, {y:.3f}, {z:.3f}): "
+            f"stdout={result.stdout.strip()!r} stderr={result.stderr.strip()!r}")
+        if settle_sec:
+            time.sleep(settle_sec)
+
     def teleport(self, x, y, yaw):
         self.teleport_model('ur', x, y, 0.0, yaw)
 
@@ -785,6 +820,13 @@ class FullLayerGraspNode(Node):
             self.get_logger().warn(
                 f"[Apple reset] {target_name} still moving ({drift:.4f}m between "
                 f"samples) -- re-teleporting to stop it rolling.")
+            if attempt_i == 1:
+                # Two failed teleports means it is carrying real momentum that
+                # repositioning cannot remove. Recreate the body instead.
+                self.get_logger().warn(
+                    f"[Apple reset] {target_name} keeps its velocity through teleports "
+                    f"-- respawning it to reset the body entirely.")
+                self.respawn_model(target_name, hx, hy, target_z)
         self.get_logger().warn(
             f"[Apple reset] {target_name} would not settle; proceeding anyway.")
 

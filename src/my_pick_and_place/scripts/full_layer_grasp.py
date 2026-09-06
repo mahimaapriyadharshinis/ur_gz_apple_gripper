@@ -998,7 +998,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         # so this solves IK twice: once for a rough target to get that orientation,
         # then again for the corrected target so the FINGERS -- not the bare wrist --
         # land at the apple's real measured position.
-        FINGERTIP_CENTROID_HAND_FRAME = np.array([0.0651, -0.0058, 0.1024])
+        FINGERTIP_CENTROID_HAND_FRAME = np.array([0.0299, 0.0011, 0.1438])
 
         rough_target = [x, y, z_center + 0.164]
         rough_result = solve_ik(self.chain, rough_target)

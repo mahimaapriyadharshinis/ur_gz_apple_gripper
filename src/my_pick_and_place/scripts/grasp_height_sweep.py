@@ -1,30 +1,24 @@
-#!/usr/bin/env python3
 """
 Find the grasp height that actually works, by testing several and measuring.
 
-Everything measured so far says the usable height window is narrow and we have
-never tried inside it:
+Re-run this after the fingertip-joint fix: every height conclusion drawn before it
+was measured against a hand whose fingertip joints were frozen, so they are all
+suspect.
 
-  table top    = 0.400   apple centre = 0.440   apple top = 0.480
-  fingertips hang ~0.117m below the wrist (finger_geometry_check.py, four long
-  fingers; the thumb is much shorter at 0.077 and drags the 5-finger average down
-  to 0.102, which is why using that average put the wrist too low)
+Geometry as now measured (finger_geometry_check.py, with the hand actually
+closing):
 
-  wrist 0.604 (old height)       -> fingertips ~0.487 -> just ABOVE the apple:
-                                    fingers close in thin air, zero contact.
-                                    Confirmed: all 5 fingers reached full closure
-                                    with only baseline-noise effort.
-  wrist 0.542 (0.102 correction) -> fingertips ~0.425 -> only 2cm above the TABLE,
-                                    with fingers spread wide open around the apple.
-                                    Add the measured 3-4deg shoulder droop
-                                    (shoulder_lift_sweep.py) and they reach the
-                                    table. Confirmed: shoulder_lift pinned at its
-                                    150Nm limit at every station distance tested.
+  table top 0.400,  apple centre 0.440,  apple top 0.480
+  hand OPEN:   fingertips hang 0.164m below the wrist, thumb-index span 15.38cm
+  hand CLOSED: fingertip centroid rises to 0.083m below the wrist, span 9.11cm
 
-So the fingertips need to land between ~0.42 (clear of the table) and ~0.48 (below
-the apple's top) -- a wrist height around 0.55-0.58, never tested. This sweeps that
-range, and at each height actually closes the fingers and reports whether real
-contact happened, rather than inferring it.
+So with the hand open the fingertips only clear the table above wrist z=0.564, and
+as the fingers close they rise and converge -- meaning the apple wants to end up in
+the volume the fingers sweep through, not where the open fingertips start.
+
+At each height this actually closes the fingers and reports real contact, fingertip
+clearance above the table, joint saturation, and how far the apple moved, rather
+than inferring any of it.
 
 Usage: python3 grasp_height_sweep.py [target_name] [z1,z2,z3...]
 """
@@ -41,16 +35,24 @@ from full_layer_grasp import (
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
 )
 
-# Measured: the arm bottoms out around wrist z=0.585 -- commanding anything lower
-# just saturates shoulder_lift/wrist_1/wrist_2 and still lands at 0.584-0.590. So
-# only heights at or above that floor are actually testable.
-DEFAULT_HEIGHTS = [0.590, 0.600, 0.610, 0.620]
+# The earlier "arm bottoms out at 0.585" floor was an artefact of the broken hand:
+# with the fingertip joints frozen, the fingers stuck out rigidly 16.4cm below the
+# wrist, hit the table, and physically blocked the arm's descent (which is also what
+# pinned shoulder_lift at 150Nm). Now that the fingers actually curl, that limit no
+# longer applies, so this sweeps a wider band again.
+#
+# With the hand OPEN the fingertips hang 0.164m below the wrist, so they clear the
+# table (0.400) only above wrist z=0.564. As they close, the fingertip centroid rises
+# to 0.083m below the wrist, so the closing fingers converge around the apple rather
+# than below it.
+DEFAULT_HEIGHTS = [0.570, 0.585, 0.600, 0.615, 0.630]
 
-# Thumb-to-index fingertip distance, measured via TF (finger_geometry_check.py).
-# The hand only opens to 8.73cm and closes to 7.87cm, so an 8.00cm apple leaves just
-# 3.6mm of clearance per side going in, and barely any grip travel once around it.
-HAND_SPAN_OPEN = 0.0873
-HAND_SPAN_CLOSED = 0.0787
+# Thumb-to-index fingertip distance, measured via TF (finger_geometry_check.py)
+# AFTER the fingertip-joint fix. The hand opens to 15.38cm and closes to 9.11cm.
+# The earlier 8.73/7.87cm figures were measured on the broken hand and on stale TF
+# data, and badly understated what the hand can do.
+HAND_SPAN_OPEN = 0.1538
+HAND_SPAN_CLOSED = 0.0911
 
 # Each apple's real collision radius, straight from its own model.sdf -- they are NOT
 # all the same, and the differences matter a lot against a hand this tight.

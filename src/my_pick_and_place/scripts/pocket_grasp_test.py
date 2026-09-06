@@ -195,6 +195,18 @@ def attempt(node, target_name, palm_down, preshape):
         err = float(np.linalg.norm(np.array(real) - wrist_target))
         print(f"  wrist real ({real[0]:.3f}, {real[1]:.3f}, {real[2]:.3f}) err={err:.3f}m")
 
+    # Verify the PALM actually ended up where it was asked to. The hand's +X axis is
+    # the palm normal (fingers along +Z, thumb opposing along +X), so palm-down means
+    # that axis pointing at the table. Reporting it makes a silently-ignored
+    # orientation request obvious in the log rather than only in the viewer.
+    palm = node.real_palm_normal()
+    if palm is not None:
+        down = float(np.dot(palm, np.array([0.0, 0.0, -1.0])))
+        tilt = float(np.degrees(np.arccos(max(-1.0, min(1.0, down)))))
+        print(f"  palm normal ({palm[0]:+.2f}, {palm[1]:+.2f}, {palm[2]:+.2f}) -- "
+              f"{tilt:.0f}deg from straight down "
+              f"({'PARALLEL to ground' if tilt < 25 else 'NOT parallel'})")
+
     contacted, peak = close_and_measure(node, start_pitch=preshape)
     n = sum(contacted.values())
     print(f"  fingers contacted: {n}/5")

@@ -442,6 +442,19 @@ def solve_ik(chain, target_xyz, init=None, target_rotation=None):
         valid_solutions = [sol for sol, err, dot in results
                             if err < IK_FALLBACK_ERROR_CEILING and dot > ORIENTATION_DOT_MIN_LOOSE]
 
+    # When a caller demands a SPECIFIC hand orientation, silently falling back to a
+    # position-only solution is worse than failing: it looks like the request was
+    # honoured while the hand does something else entirely. That happened directly --
+    # three "palm-down" attempts all landed at the identical free-roll pose (0.887,
+    # 0.079, 0.588), 0.124m from the requested target, and only a visual check caught
+    # it. Report it instead.
+    if target_rotation is not None and not valid_solutions:
+        best_dot = max((dot for _, _, dot in results), default=float('nan'))
+        print(f"[solve_ik] requested orientation NOT achievable at {target_xyz}: "
+              f"best axis match {best_dot:.3f} (need > {ORIENTATION_DOT_MIN_LOOSE}). "
+              f"Refusing to silently return a differently-oriented solution.")
+        return None
+
     # ikpy has no concept of collisions -- joint limits here are +-2*pi (URDF), wide
     # enough that a mathematically valid solution can still swing an arm joint far past
     # center, physically sweeping it through the robot's own body to get there.
@@ -571,6 +584,25 @@ class FullLayerGraspNode(Node):
             return (p.x, p.y, p.z)
         except Exception as e:
             self.get_logger().warn(f"[real_wrist_position] TF lookup failed: {e}")
+            return None
+
+    def real_palm_normal(self, timeout_sec=1.0):
+        """The palm's real facing direction, from TF. The hand's +X axis is the palm
+        normal (measured: fingers extend along +Z and spread along Y, thumb opposes
+        along +X), so this says which way the palm is actually pointing -- the thing a
+        "palm parallel to the ground" request is really asking about."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                'base_footprint', 'dexhand_base_link', rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=timeout_sec))
+            q = t.transform.rotation
+            x, y, z, w = q.x, q.y, q.z, q.w
+            # First column of the rotation matrix = the frame's own X axis.
+            return np.array([1 - 2 * (y * y + z * z),
+                             2 * (x * y + z * w),
+                             2 * (x * z - y * w)])
+        except Exception as e:
+            self.get_logger().warn(f"[real_palm_normal] TF lookup failed: {e}")
             return None
 
     def set_target(self, target_name):

@@ -16,10 +16,15 @@ fingers curl into, pressed toward the palm. Every attempt so far has aimed eithe
 the wrist or the OPEN fingertips at the apple, but the fingers converge to a point
 0.063m forward and 0.083m below the wrist -- the apple has never been put there.
 
-This aims that closed-fingertip centroid at the apple, using the wrist's real
-achieved orientation to rotate the offset (the same two-pass approach
-full_layer_grasp.py uses), and tries small variations around it since the pocket's
-exact centre is itself a measured estimate.
+Aiming that pocket at the apple is not enough on its own, though: with the hand
+open the fingertips hang 0.164m below the wrist and ground out on the table, so the
+arm cannot descend past ~0.57 and the pocket never gets below the apple's top. So
+this also PRE-SHAPES the fingers before descending -- curling them partway retracts
+the fingertips enough to reach, while the hand still spans far wider than the apple.
+
+It aims the closed-fingertip centroid at the apple using the wrist's real achieved
+orientation to rotate the offset (the same two-pass approach full_layer_grasp.py
+uses), and sweeps the pre-shape angle.
 
 Usage: python3 pocket_grasp_test.py [target_name]
 """
@@ -41,10 +46,19 @@ from full_layer_grasp import (
 # into -- where an object has to be to end up gripped rather than brushed.
 CLOSED_CENTROID_HAND_FRAME = np.array([0.0634, -0.0056, 0.0834])
 
-# The pocket centre is a measured estimate, and the apple has a 4cm radius, so nudge
-# the aim around it rather than betting everything on one point. Offsets are applied
-# along the hand's own approach axis (+ve = deeper into the palm).
-DEPTH_OFFSETS = [0.00, -0.02, -0.04, 0.02]
+# Pre-shape: how far the fingers are curled BEFORE descending.
+#
+# With the hand fully open the fingertips hang 0.164m below the wrist, so they strike
+# the table (0.400) at any wrist height below 0.564 -- measured directly, the arm
+# bottoms out at ~0.57 no matter what is commanded. But the grip pocket sits 0.083m
+# below the wrist, so putting it at the apple's centre (0.440) needs the wrist at
+# 0.523. Those two cannot both hold with an open hand, which is why the fingers end up
+# closing over the apple's TOP and it squirts away.
+#
+# Curling the fingers partway first retracts the fingertips enough to descend, while
+# the hand still spans far more than the apple: 15.38cm open, 9.17cm at pitch 1.0, so
+# roughly 11.5cm at pitch 0.7 against an 8.00cm apple. This sweeps that pre-shape.
+PRESHAPES = [0.0, 0.5, 0.7, 0.9]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
 
@@ -60,10 +74,10 @@ def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):
     return False
 
 
-def close_and_measure(node):
+def close_and_measure(node, start_pitch=0.0):
     contacted = {g: False for g in FINGER_GROUPS}
     peak = {g: 0.0 for g in FINGER_GROUPS}
-    current = {g: 0.0 for g in FINGER_GROUPS}
+    current = {g: start_pitch for g in FINGER_GROUPS}
     for _ in range(26):
         for g in FINGER_GROUPS:
             if not contacted[g]:
@@ -89,8 +103,8 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, depth_offset):
-    print(f"\n{'=' * 72}\nPOCKET AIM, depth offset {depth_offset:+.3f}m\n{'=' * 72}")
+def attempt(node, target_name, preshape):
+    print(f"\n{'=' * 72}\nPOCKET AIM, pre-shape pitch {preshape:.2f}\n{'=' * 72}")
 
     wx, wy = APPLE_HOME_WORLD_XY[target_name]
     node.robot_x, node.robot_y, node.robot_yaw = wx, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW
@@ -109,12 +123,10 @@ def attempt(node, target_name, depth_offset):
     rough = solve_ik(node.chain, list(apple_local + np.array([0, 0, 0.164])))
     if rough is None:
         print("  rough solve UNREACHABLE")
-        return {"offset": depth_offset, "ok": False}
+        return {"preshape": preshape, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
-    pocket = CLOSED_CENTROID_HAND_FRAME.copy()
-    pocket[2] += depth_offset
-    offset_local = wrist_rot @ pocket
+    offset_local = wrist_rot @ CLOSED_CENTROID_HAND_FRAME
     wrist_target = apple_local - offset_local
 
     print(f"  apple at local ({apple_local[0]:.3f}, {apple_local[1]:.3f}, {apple_local[2]:.3f})")
@@ -127,9 +139,13 @@ def attempt(node, target_name, depth_offset):
     grasp = solve_ik(node.chain, list(wrist_target))
     if approach is None or grasp is None:
         print("  UNREACHABLE")
-        return {"offset": depth_offset, "ok": False}
+        return {"preshape": preshape, "ok": False}
 
-    node.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.0)
+    # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
+    # the wrist can actually reach the pocket height instead of the fingers grounding
+    # out on the table first.
+    node.command_fingers({g: preshape for g in FINGER_GROUPS}, 1.5)
+    settle(node, 6.0, joints=[f"{g}_Pitch" for g in FINGER_GROUPS], thresh=0.02)
     node.send_arm_trajectory(approach[0], 3.5)
     settle(node, 12.0)
     node.send_arm_trajectory(grasp[0], 3.0)
@@ -140,7 +156,7 @@ def attempt(node, target_name, depth_offset):
         err = float(np.linalg.norm(np.array(real) - wrist_target))
         print(f"  wrist real ({real[0]:.3f}, {real[1]:.3f}, {real[2]:.3f}) err={err:.3f}m")
 
-    contacted, peak = close_and_measure(node)
+    contacted, peak = close_and_measure(node, start_pitch=preshape)
     n = sum(contacted.values())
     print(f"  fingers contacted: {n}/5")
     print("  peak efforts: " + ", ".join("%s=%.3f" % (g, peak[g]) for g in FINGER_GROUPS))
@@ -153,7 +169,7 @@ def attempt(node, target_name, depth_offset):
     if moved is not None:
         print(f"  apple moved {moved:.3f}m (height change {lifted:+.3f}m)")
 
-    return {"offset": depth_offset, "ok": True, "contacts": n, "peak": peak,
+    return {"preshape": preshape, "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 
 
@@ -175,18 +191,18 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    results = [attempt(node, target_name, d) for d in DEPTH_OFFSETS]
+    results = [attempt(node, target_name, p) for p in PRESHAPES]
 
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
-    print(f"{'depth':>8} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
+    print(f"{'preshape':>9} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            print(f"{r['offset']:+8.3f} {'UNREACHABLE':>9}")
+            print(f"{r['preshape']:9.2f} {'UNREACHABLE':>9}")
             continue
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        print(f"{r['offset']:+8.3f} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
+        print(f"{r['preshape']:9.2f} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     best = max((r for r in results if r.get("ok")),
                key=lambda r: (r["contacts"], max(r["peak"].values())), default=None)

@@ -46,20 +46,31 @@ def tip(node, link):
         return None
 
 
-def settle_fingers(node, timeout=8.0):
+def settle_thumb(node, yaw, roll, timeout=12.0, min_wait=2.0):
+    """Wait until the thumb joints actually REACH the commanded angles.
+
+    Waiting for "no longer changing" is not enough on its own: called right after
+    publishing, the joints have not started moving yet, so unchanged reads as settled
+    and the measurement is taken before anything happened. That produced byte-identical
+    rows for different commands -- each row showing the PREVIOUS setting's result.
+    Requiring the commanded value to be reached (and a minimum wait first) removes the
+    ambiguity.
+    """
     start = time.time()
-    last = None
     while time.time() - start < timeout:
         for _ in range(5):
             rclpy.spin_once(node, timeout_sec=0.1)
-        pos = [node.latest_joint_state.get(j, (None, None, None))[0]
-               for j in ('R_Thumb_Yaw', 'R_Thumb_Roll')]
-        if last is not None and all(
-                a is not None and b is not None and abs(a - b) < 0.002
-                for a, b in zip(pos, last)):
-            return True
-        last = pos
-    return False
+        if time.time() - start < min_wait:
+            continue
+        y = node.latest_joint_state.get('R_Thumb_Yaw', (None, None, None))[0]
+        r = node.latest_joint_state.get('R_Thumb_Roll', (None, None, None))[0]
+        if y is None or r is None:
+            continue
+        if abs(y - yaw) < 0.02 and abs(r - roll) < 0.02:
+            return True, y, r
+    y = node.latest_joint_state.get('R_Thumb_Yaw', (None, None, None))[0]
+    r = node.latest_joint_state.get('R_Thumb_Roll', (None, None, None))[0]
+    return False, y, r
 
 
 def main():
@@ -71,7 +82,7 @@ def main():
             break
 
     print("Sweeping thumb yaw/roll with the hand open.\n")
-    print(f"{'yaw':>6} {'roll':>6} {'thumb_X':>9} {'protrude':>9} "
+    print(f"{'yaw':>6} {'roll':>6} {'real_yaw':>9} {'thumb_X':>9} "
           f"{'gap_to_fingers':>15} {'opposition':>11}")
 
     rows = []
@@ -79,7 +90,13 @@ def main():
         for roll in ROLLS:
             node.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.5,
                                  thumb_yaw=yaw, thumb_roll=roll)
-            settle_fingers(node)
+            reached, real_yaw, real_roll = settle_thumb(node, yaw, roll)
+            if not reached:
+                ry = f"{real_yaw:.3f}" if real_yaw is not None else "?"
+                rr = f"{real_roll:.3f}" if real_roll is not None else "?"
+                print(f"{yaw:6.2f} {roll:6.2f}   did NOT reach command "
+                      f"(real yaw={ry} roll={rr}) -- reading skipped")
+                continue
 
             th = tip(node, FINGERTIP_LINK["R_Thumb"])
             fingers = [tip(node, l) for l in FINGER_TIPS]
@@ -99,7 +116,7 @@ def main():
             n = float(np.linalg.norm(d))
             opposition = float(abs(d[0]) / n) if n > 1e-6 else 0.0
 
-            print(f"{yaw:6.2f} {roll:6.2f} {th[0]:9.4f} {protrude:9.4f} "
+            print(f"{yaw:6.2f} {roll:6.2f} {real_yaw:9.3f} {th[0]:9.4f} "
                   f"{gap:15.4f} {opposition:11.3f}")
             rows.append((yaw, roll, protrude, gap, opposition))
 

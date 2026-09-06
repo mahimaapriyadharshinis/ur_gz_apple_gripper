@@ -287,16 +287,25 @@ def attempt(node, target_name, palm_down, preshape):
         wrist_after = node.real_wrist_position()
         if before is not None and after_lift is not None:
             lifted = float(after_lift[2] - before[2])
+            # apple_xyz() is in WORLD coordinates but real_wrist_position() is in the
+            # robot's own base_footprint frame -- comparing them directly was measuring
+            # nothing. It reported 0.447m for an apple that was really 0.108m from the
+            # wrist, so "not held" could not be trusted. Convert the apple into the
+            # robot frame first.
+            ax, ay = world_to_local(after_lift[0], after_lift[1],
+                                    node.robot_x, node.robot_y, node.robot_yaw)
+            after_lift_local = np.array([ax, ay, after_lift[2]])
             # Height alone is NOT enough: an apple flung across the room can land
             # higher than it started and score as a success. Measured directly -- one
             # attempt threw the apple 79m, ended +0.400m up, and was reported HELD.
             # A real hold means the apple is still in the hand.
             near = None
             if wrist_after is not None:
-                near = float(np.linalg.norm(after_lift - np.array(wrist_after)))
+                near = float(np.linalg.norm(after_lift_local - np.array(wrist_after)))
             held = (lifted > LIFT_HEIGHT * 0.5 and near is not None
                     and near < HOLD_DISTANCE)
-            near_s = f"{near:.3f}m from wrist" if near is not None else "wrist unknown"
+            near_s = (f"{near:.3f}m from wrist (robot frame)" if near is not None
+                      else "wrist unknown")
             print(f"  apple height change after lift: {lifted:+.3f}m, {near_s} "
                   f"({'HELD' if held else 'not held'})")
             if not held:

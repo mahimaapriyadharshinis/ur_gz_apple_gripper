@@ -74,23 +74,40 @@ def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):
     return False
 
 
+# Closing in +0.05 rad steps and only checking force every ~0.3s let the position
+# controller keep driving hard into the apple between samples: R_Middle was measured
+# peaking at 7-11Nm against a 0.12Nm contact threshold -- roughly 110N on a 0.18kg
+# apple, which simply launches it. The first finger to arrive threw the apple clear
+# before the other four got near it, which is why every attempt stops at 1/5.
+# Smaller steps checked far more often stop a finger when it first feels the apple
+# instead of long after.
+CLOSE_STEP = 0.015
+CHECKS_PER_STEP = 2
+
+
 def close_and_measure(node, start_pitch=0.0):
     contacted = {g: False for g in FINGER_GROUPS}
     peak = {g: 0.0 for g in FINGER_GROUPS}
     current = {g: start_pitch for g in FINGER_GROUPS}
-    for _ in range(26):
+    steps = int((MAX_PITCH_CEILING - start_pitch) / CLOSE_STEP) + 2
+    for _ in range(steps):
         for g in FINGER_GROUPS:
             if not contacted[g]:
-                current[g] = min(current[g] + 0.05, MAX_PITCH_CEILING)
-        node.command_fingers(current, 0.25)
-        for _ in range(3):
-            rclpy.spin_once(node, timeout_sec=0.1)
-        for g in FINGER_GROUPS:
-            _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
-            eff = abs(eff or 0.0)
-            peak[g] = max(peak[g], eff)
-            if eff > EFFORT_CONTACT_THRESHOLD:
-                contacted[g] = True
+                current[g] = min(current[g] + CLOSE_STEP, MAX_PITCH_CEILING)
+        node.command_fingers(current, 0.08)
+        for _ in range(CHECKS_PER_STEP):
+            rclpy.spin_once(node, timeout_sec=0.05)
+            for g in FINGER_GROUPS:
+                _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
+                eff = abs(eff or 0.0)
+                peak[g] = max(peak[g], eff)
+                if eff > EFFORT_CONTACT_THRESHOLD and not contacted[g]:
+                    contacted[g] = True
+                    # Hold this finger exactly where it is the moment it feels the
+                    # apple, so it stops pushing instead of driving on to its target.
+                    pos = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
+                    if pos is not None:
+                        current[g] = pos
         if all(contacted.values()):
             break
     return contacted, peak
@@ -208,10 +225,10 @@ def main():
                key=lambda r: (r["contacts"], max(r["peak"].values())), default=None)
     if best and best["contacts"] >= 3:
         print(f"\nGRIP: {best['contacts']}/5 fingers at depth offset "
-              f"{best['offset']:+.3f}m. This is a working grasp configuration.")
+              f"{best['preshape']:.2f}. This is a working grasp configuration.")
     elif best and best["contacts"] > 0:
         print(f"\nPartial: best was {best['contacts']}/5 at depth offset "
-              f"{best['offset']:+.3f}m. Worth sweeping finer around that depth.")
+              f"{best['preshape']:.2f}. Worth sweeping finer around it.")
     else:
         print("\nStill no contact anywhere in the pocket. Since the hand demonstrably "
               "reaches the apple (it moves), and cannot pinch it (closed span 9.11cm vs "

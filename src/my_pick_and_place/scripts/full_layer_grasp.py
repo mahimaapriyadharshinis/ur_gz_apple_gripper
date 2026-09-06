@@ -126,12 +126,25 @@ APPLE_RADIUS = {
 TABLE_TOP_Z = 0.400
 
 
+# Teleporting an apple to EXACTLY resting height puts its surface in precise contact
+# with the table, so any numerical overlap registers as penetration and the physics
+# engine shoves it apart. Dropping it from a centimetre up instead lets it settle
+# under gravity into a clean resting contact.
+APPLE_RESET_CLEARANCE = 0.01
+
+
 def apple_home_z(target_name):
     """Resting centre height of an apple sitting on the table: its own radius above
     the table top. This is per-apple now -- a single constant was fine when every
     apple was 0.04m, but the radii differ by up to 1cm, which is a quarter of the
     grasp tolerance."""
     return TABLE_TOP_Z + APPLE_RADIUS.get(target_name, 0.0555)
+
+
+def apple_reset_z(target_name):
+    """Where to teleport an apple to when resetting it -- slightly above its resting
+    height, so it drops the last centimetre rather than spawning in exact contact."""
+    return apple_home_z(target_name) + APPLE_RESET_CLEARANCE
 
 
 # Kept for callers that just want a representative height; prefer apple_home_z(name).
@@ -674,7 +687,9 @@ class FullLayerGraspNode(Node):
                 f"[Apple reset] No known spawn position for {target_name} -- skipping reset.")
             return
         hx, hy = APPLE_HOME_WORLD_XY[target_name]
-        self.teleport_model(target_name, hx, hy, apple_home_z(target_name), settle_sec=1.0)
+        # settle_sec long enough for the drop to finish before anything reads its pose.
+        self.teleport_model(target_name, hx, hy, apple_reset_z(target_name),
+                            settle_sec=1.5)
 
     def reset_everything(self):
         self.get_logger().info("=== RESET: base position ===")

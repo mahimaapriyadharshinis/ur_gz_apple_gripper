@@ -32,6 +32,11 @@ ARM_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
               'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 FINGER_GROUPS = ["R_Index", "R_Middle", "R_Ring", "R_Pinky", "R_Thumb"]
 FINGER_JOINT_NAMES = [f"{g}_Pitch" for g in FINGER_GROUPS]
+# Fingertip link per group. Note "Midle" -- the typo is in the DexHand URDF itself.
+FINGERTIP_LINK = {
+    "R_Index": "Index_Tip_1", "R_Middle": "Midle_Tip_1", "R_Ring": "Ring_Tip_1",
+    "R_Pinky": "Pinky_Tip_1", "R_Thumb": "Thumb_Tip_1",
+}
 FINGER_SECONDARY_JOINTS = {
     "R_Index": ["R_Index_Flexor", "R_Index_DIP"],
     "R_Middle": ["R_Middle_Flexor", "R_Middle_DIP"],
@@ -605,6 +610,29 @@ class FullLayerGraspNode(Node):
             self.get_logger().warn(f"[real_palm_normal] TF lookup failed: {e}")
             return None
 
+    def fingertips_near_apple(self, apple_local_xyz, apple_radius, margin=0.03):
+        """Which fingertips are actually at the apple, by position.
+
+        Effort alone cannot tell an apple from a table: a run with the fingers jammed
+        into the tabletop reported 4/5 "contacts" at saturated 100Nm force while the
+        apple never moved a millimetre, because nothing had touched it. Comparing each
+        fingertip's real TF position against the apple's own position and radius
+        distinguishes the two.
+        """
+        near = {}
+        for g, link in FINGERTIP_LINK.items():
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    'base_footprint', link, rclpy.time.Time(),
+                    timeout=rclpy.duration.Duration(seconds=0.5))
+                p = t.transform.translation
+                d = float(np.linalg.norm(
+                    np.array([p.x, p.y, p.z]) - np.asarray(apple_local_xyz)))
+                near[g] = d <= apple_radius + margin
+            except Exception:
+                near[g] = False
+        return near
+
     def set_target(self, target_name):
         if self.pose_sub is not None:
             self.destroy_subscription(self.pose_sub)
@@ -790,9 +818,23 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"target_effort_est={target_effort:.2f}, max_pitch={max_pitch:.2f}")
         return {"max_pitch": max_pitch, "target_effort_est": target_effort}
 
-    def command_fingers(self, positions_by_group, step_duration):
+    def command_fingers(self, positions_by_group, step_duration, thumb_yaw=None,
+                        thumb_roll=None):
         all_names = list(FINGER_JOINT_NAMES)
         all_positions = [positions_by_group[g] for g in FINGER_GROUPS]
+        # R_Thumb_Yaw (+/-0.524) and R_Thumb_Roll (+/-0.349) mount straight onto
+        # dexhand_base_link and set where the thumb sits relative to the palm. They
+        # were never commanded, leaving the thumb splayed out along the palm normal --
+        # measured at hand-X 0.119m versus 0.007m for the fingers -- so with the palm
+        # facing down the thumb points at the table and grounds out before the fingers
+        # reach anything. Measured effect: thumb 15.3Nm against 0.38-0.40Nm on every
+        # other finger.
+        if thumb_yaw is not None:
+            all_names.append('R_Thumb_Yaw')
+            all_positions.append(float(thumb_yaw))
+        if thumb_roll is not None:
+            all_names.append('R_Thumb_Roll')
+            all_positions.append(float(thumb_roll))
         for g in FINGER_GROUPS:
             for j_name in FINGER_SECONDARY_JOINTS[g]:
                 all_names.append(j_name)

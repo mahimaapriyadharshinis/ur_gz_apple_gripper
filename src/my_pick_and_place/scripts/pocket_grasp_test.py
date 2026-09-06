@@ -103,7 +103,7 @@ CLOSE_STEP = 0.015
 CHECKS_PER_STEP = 2
 
 
-def close_and_measure(node, start_pitch=0.0):
+def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None):
     contacted = {g: False for g in FINGER_GROUPS}
     peak = {g: 0.0 for g in FINGER_GROUPS}
     current = {g: start_pitch for g in FINGER_GROUPS}
@@ -120,6 +120,13 @@ def close_and_measure(node, start_pitch=0.0):
                 eff = abs(eff or 0.0)
                 peak[g] = max(peak[g], eff)
                 if eff > EFFORT_CONTACT_THRESHOLD and not contacted[g]:
+                    # Force alone cannot tell the apple from the table -- a run with
+                    # fingers jammed in the tabletop reported 4/5 "contacts" at
+                    # saturated 100Nm while the apple never moved. Only count it if
+                    # this fingertip is actually at the apple.
+                    if apple_local is not None and radius is not None:
+                        if not node.fingertips_near_apple(apple_local, radius).get(g):
+                            continue
                     contacted[g] = True
                     # Hold this finger exactly where it is the moment it feels the
                     # apple, so it stops pushing instead of driving on to its target.
@@ -207,7 +214,9 @@ def attempt(node, target_name, palm_down, preshape):
               f"{tilt:.0f}deg from straight down "
               f"({'PARALLEL to ground' if tilt < 25 else 'NOT parallel'})")
 
-    contacted, peak = close_and_measure(node, start_pitch=preshape)
+    contacted, peak = close_and_measure(
+        node, start_pitch=preshape, apple_local=apple_local,
+        radius=APPLE_RADIUS.get(target_name, 0.0555))
     n = sum(contacted.values())
     print(f"  fingers contacted: {n}/5")
     print("  peak efforts: " + ", ".join("%s=%.3f" % (g, peak[g]) for g in FINGER_GROUPS))

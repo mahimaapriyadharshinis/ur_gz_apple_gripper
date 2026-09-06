@@ -38,6 +38,7 @@ from full_layer_grasp import (
     FullLayerGraspNode, APPLE_HOME_WORLD_XY, apple_home_z, APPLE_RADIUS,
     DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW,
     world_to_local, solve_ik, hand_fk, ARM_JOINTS, FINGER_GROUPS,
+    PALM_DOWN_ROTATION,
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
 )
 
@@ -58,13 +59,26 @@ CLOSED_CENTROID_HAND_FRAME = np.array([0.0634, -0.0056, 0.0834])
 # Curling the fingers partway first retracts the fingertips enough to descend, while
 # the hand still spans far more than the apple: 15.38cm open, 9.17cm at pitch 1.0, so
 # roughly 11.5cm at pitch 0.7 against an 8.00cm apple. This sweeps that pre-shape.
-PRESHAPES = [0.0, 0.5, 0.7, 0.9]
+# Each case is (palm_down, preshape). palm_down pins the hand's full orientation so
+# the palm faces the table and the fingers curl up under the apple; without it only
+# the wrist axis is constrained and the palm's roll is random, which is why identical
+# commands gave 5/5 contacts one run and 1/5 the next.
+CASES = [
+    (False, 0.0),   # baseline: what we have been running all along
+    (True, 0.0),
+    (True, 0.3),
+    (True, 0.5),
+]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
 
 # How far to raise the wrist after closing. Contact proves the fingers reached the
 # apple; only lifting proves the grip actually holds it.
 LIFT_HEIGHT = 0.15
+
+# How close the apple must still be to the wrist afterwards to count as held.
+# Roughly the hand's own size -- further than this and it is not in the hand.
+HOLD_DISTANCE = 0.20
 
 
 def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):
@@ -124,8 +138,10 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, preshape):
-    print(f"\n{'=' * 72}\nPOCKET AIM, pre-shape pitch {preshape:.2f}\n{'=' * 72}")
+def attempt(node, target_name, palm_down, preshape):
+    label = "palm-DOWN" if palm_down else "free-roll (baseline)"
+    print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
+    rot = PALM_DOWN_ROTATION if palm_down else None
 
     wx, wy = APPLE_HOME_WORLD_XY[target_name]
     node.robot_x, node.robot_y, node.robot_yaw = wx, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW
@@ -141,10 +157,11 @@ def attempt(node, target_name, preshape):
     # Pass 1: a rough solve just to learn which way the wrist ends up facing, since the
     # pocket offset is expressed in the hand's own frame and has to be rotated into the
     # robot frame before it means anything.
-    rough = solve_ik(node.chain, list(apple_local + np.array([0, 0, 0.164])))
+    rough = solve_ik(node.chain, list(apple_local + np.array([0, 0, 0.164])),
+                     target_rotation=rot)
     if rough is None:
         print("  rough solve UNREACHABLE")
-        return {"preshape": preshape, "ok": False}
+        return {"preshape": preshape, "palm_down": palm_down, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
     offset_local = wrist_rot @ CLOSED_CENTROID_HAND_FRAME
@@ -156,11 +173,12 @@ def attempt(node, target_name, preshape):
     print(f"  wrist target ({wrist_target[0]:.3f}, {wrist_target[1]:.3f}, "
           f"{wrist_target[2]:.3f})")
 
-    approach = solve_ik(node.chain, list(wrist_target + np.array([0, 0, 0.09])))
-    grasp = solve_ik(node.chain, list(wrist_target))
+    approach = solve_ik(node.chain, list(wrist_target + np.array([0, 0, 0.09])),
+                        target_rotation=rot)
+    grasp = solve_ik(node.chain, list(wrist_target), target_rotation=rot)
     if approach is None or grasp is None:
         print("  UNREACHABLE")
-        return {"preshape": preshape, "ok": False}
+        return {"preshape": preshape, "palm_down": palm_down, "ok": False}
 
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
@@ -195,7 +213,7 @@ def attempt(node, target_name, preshape):
     # the hold is maintained through the lift rather than relaxing.
     lifted = None
     lift_target = list(wrist_target + np.array([0, 0, LIFT_HEIGHT]))
-    lift = solve_ik(node.chain, lift_target)
+    lift = solve_ik(node.chain, lift_target, target_rotation=rot)
     if lift is None:
         print("  lift target UNREACHABLE -- cannot test the hold")
     else:
@@ -205,13 +223,26 @@ def attempt(node, target_name, preshape):
         for _ in range(10):
             rclpy.spin_once(node, timeout_sec=0.1)
         after_lift = apple_xyz(node)
+        wrist_after = node.real_wrist_position()
         if before is not None and after_lift is not None:
             lifted = float(after_lift[2] - before[2])
-            held = lifted > LIFT_HEIGHT * 0.5
-            print(f"  apple height change after lift: {lifted:+.3f}m "
-                  f"({'HELD' if held else 'dropped/slipped'})")
+            # Height alone is NOT enough: an apple flung across the room can land
+            # higher than it started and score as a success. Measured directly -- one
+            # attempt threw the apple 79m, ended +0.400m up, and was reported HELD.
+            # A real hold means the apple is still in the hand.
+            near = None
+            if wrist_after is not None:
+                near = float(np.linalg.norm(after_lift - np.array(wrist_after)))
+            held = (lifted > LIFT_HEIGHT * 0.5 and near is not None
+                    and near < HOLD_DISTANCE)
+            near_s = f"{near:.3f}m from wrist" if near is not None else "wrist unknown"
+            print(f"  apple height change after lift: {lifted:+.3f}m, {near_s} "
+                  f"({'HELD' if held else 'not held'})")
+            if not held:
+                lifted = None
 
-    return {"preshape": preshape, "ok": True, "contacts": n, "peak": peak,
+    return {"preshape": preshape, "palm_down": palm_down, "ok": True,
+            "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 
 
@@ -233,18 +264,20 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    results = [attempt(node, target_name, p) for p in PRESHAPES]
+    results = [attempt(node, target_name, pd, ps) for pd, ps in CASES]
 
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
-    print(f"{'preshape':>9} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
+    print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            print(f"{r['preshape']:9.2f} {'UNREACHABLE':>9}")
+            nm = ('palm-down' if r['palm_down'] else 'free-roll') + f" ps={r['preshape']:.1f}"
+            print(f"{nm:>22} {'UNREACHABLE':>9}")
             continue
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        print(f"{r['preshape']:9.2f} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
+        nm = ('palm-down' if r['palm_down'] else 'free-roll') + f" ps={r['preshape']:.1f}"
+        print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results
             if r.get("ok") and r.get("lifted") is not None

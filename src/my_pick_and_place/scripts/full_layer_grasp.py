@@ -306,7 +306,27 @@ def hand_fk(chain, solution):
     return chain.forward_kinematics(solution)
 
 
-def solve_ik(chain, target_xyz, init=None):
+# Hand-frame axes, measured via TF (finger_geometry_check.py): the four fingers
+# extend along the hand's +Z and spread along +/-Y, while the thumb sits out along +X
+# opposing them. So the palm plane is the Y-Z plane and the palm's normal is +X.
+#
+# PALM_DOWN_ROTATION puts that palm normal straight down, so the palm faces the table
+# and the fingers curl UP toward it, cupping an object from above and around the sides
+# instead of stabbing down at it. Columns are the hand's X, Y, Z axes expressed in the
+# robot frame: X -> (0,0,-1) down, Z -> (1,0,0) forward, Y = Z x X = (0,1,0).
+#
+# Without this, only the wrist's Z axis was constrained and the roll about it was left
+# entirely free, so the palm landed at a different angle every run -- measured
+# directly: identical commands produced 5/5 finger contacts one run and 1/5 the next,
+# and one run positioned the wrist to within 0.002m and still got 0/5.
+PALM_DOWN_ROTATION = np.array([
+    [0.0, 0.0, 1.0],
+    [0.0, 1.0, 0.0],
+    [-1.0, 0.0, 0.0],
+])
+
+
+def solve_ik(chain, target_xyz, init=None, target_rotation=None):
     # Computed early so guesses can be seeded AT the target's actual direction --
     # confirmed by testing that fixed-angle presets alone (0.3/-0.3 rad) let the solver
     # converge to a ~132-138 degree "mirror" configuration regardless of where the
@@ -376,15 +396,29 @@ def solve_ik(chain, target_xyz, init=None):
     results = []
     best_solution, best_error = None, float('inf')
     for g in guesses:
-        solution = chain.inverse_kinematics(
-            target_xyz, initial_position=g,
-            target_orientation=[0, 0, -1], orientation_mode='Z'
-        )
+        if target_rotation is not None:
+            # Constrain the FULL orientation, not just one axis, so the palm's roll is
+            # pinned instead of left to chance.
+            solution = chain.inverse_kinematics(
+                target_xyz, initial_position=g,
+                target_orientation=target_rotation, orientation_mode='all'
+            )
+        else:
+            solution = chain.inverse_kinematics(
+                target_xyz, initial_position=g,
+                target_orientation=[0, 0, -1], orientation_mode='Z'
+            )
         fk = hand_fk(chain, solution)
         achieved_pos = fk[:3, 3]
-        achieved_z = fk[:3, 2]
         error = np.linalg.norm(np.array(target_xyz) - achieved_pos)
-        orientation_dot = float(np.dot(achieved_z, desired_z_axis))
+        if target_rotation is not None:
+            # Score how closely the whole frame matches, averaged over its three axes,
+            # so a solution that nails position while twisting the palm is rejected.
+            orientation_dot = float(
+                np.mean([np.dot(fk[:3, i], np.asarray(target_rotation)[:, i])
+                         for i in range(3)]))
+        else:
+            orientation_dot = float(np.dot(fk[:3, 2], desired_z_axis))
         results.append((solution, error, orientation_dot))
         if error < best_error:
             best_error, best_solution = error, solution

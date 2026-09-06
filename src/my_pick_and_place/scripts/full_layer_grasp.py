@@ -143,11 +143,12 @@ APPLE_RADIUS = {
 TABLE_TOP_Z = 0.400
 
 
-# Teleporting an apple to EXACTLY resting height puts its surface in precise contact
-# with the table, so any numerical overlap registers as penetration and the physics
-# engine shoves it apart. Dropping it from a centimetre up instead lets it settle
-# under gravity into a clean resting contact.
-APPLE_RESET_CLEARANCE = 0.01
+# A tiny drop, not a centimetre. Placing the apple at EXACTLY resting height put its
+# surface in precise contact with the table, where any numerical overlap counted as
+# penetration; but a 1cm drop turned out to make a sphere bounce and start rolling,
+# and a rolling apple on a 0.5m-wide table rolls off the edge and away across the
+# floor. 2mm clears the contact without giving it momentum.
+APPLE_RESET_CLEARANCE = 0.002
 
 
 def apple_home_z(target_name):
@@ -759,9 +760,39 @@ class FullLayerGraspNode(Node):
                 f"[Apple reset] No known spawn position for {target_name} -- skipping reset.")
             return
         hx, hy = APPLE_HOME_WORLD_XY[target_name]
-        # settle_sec long enough for the drop to finish before anything reads its pose.
-        self.teleport_model(target_name, hx, hy, apple_reset_z(target_name),
-                            settle_sec=1.5)
+        # Teleporting sets the apple's POSITION but not its VELOCITY, so an apple that
+        # was already rolling keeps rolling straight through the reset -- and a sphere
+        # on a 0.5m-wide table rolls off the edge and away. Measured directly: attempts
+        # where no finger exerted more than 0.05Nm (nothing touched the apple) still
+        # reported it moving 1-2m, and one moved 142m. Re-teleporting until it actually
+        # holds still bleeds that momentum off instead of aiming at where it used to be.
+        target_z = apple_reset_z(target_name)
+        for attempt_i in range(6):
+            self.teleport_model(target_name, hx, hy, target_z, settle_sec=1.0)
+            first = self._apple_position_snapshot()
+            for _ in range(10):
+                rclpy.spin_once(self, timeout_sec=0.05)
+            second = self._apple_position_snapshot()
+            if first is None or second is None:
+                continue
+            drift = float(np.linalg.norm(np.array(second) - np.array(first)))
+            if drift < 0.002:
+                if attempt_i:
+                    self.get_logger().info(
+                        f"[Apple reset] {target_name} settled after {attempt_i + 1} "
+                        f"teleports (drift {drift:.4f}m)")
+                return
+            self.get_logger().warn(
+                f"[Apple reset] {target_name} still moving ({drift:.4f}m between "
+                f"samples) -- re-teleporting to stop it rolling.")
+        self.get_logger().warn(
+            f"[Apple reset] {target_name} would not settle; proceeding anyway.")
+
+    def _apple_position_snapshot(self):
+        if self.target_pose is None:
+            return None
+        p = self.target_pose.position
+        return (p.x, p.y, p.z)
 
     def reset_everything(self):
         self.get_logger().info("=== RESET: base position ===")

@@ -160,8 +160,21 @@ def attempt(node, target_name, palm_down, preshape):
         rclpy.spin_once(node, timeout_sec=0.1)
     before = apple_xyz(node)
 
-    x, y = world_to_local(wx, wy, node.robot_x, node.robot_y, node.robot_yaw)
-    apple_local = np.array([x, y, apple_home_z(target_name)])
+    # Aim at where the apple ACTUALLY is, not its nominal home. It can roll after the
+    # reset, and aiming at the home position then puts the hand where the apple used to
+    # be -- measured directly: runs with the palm correctly parallel and the wrist
+    # within 29mm of target still got 0/5 contacts because the apple had moved 1-2m.
+    live = apple_xyz(node)
+    if live is not None:
+        drift_from_home = float(np.linalg.norm(live[:2] - np.array([wx, wy])))
+        if drift_from_home > 0.005:
+            print(f"  apple is {drift_from_home:.3f}m from its home position -- "
+                  f"aiming at where it actually is")
+        x, y = world_to_local(live[0], live[1], node.robot_x, node.robot_y, node.robot_yaw)
+        apple_local = np.array([x, y, live[2]])
+    else:
+        x, y = world_to_local(wx, wy, node.robot_x, node.robot_y, node.robot_yaw)
+        apple_local = np.array([x, y, apple_home_z(target_name)])
 
     # Pass 1: a rough solve just to learn which way the wrist ends up facing, since the
     # pocket offset is expressed in the hand's own frame and has to be rotated into the

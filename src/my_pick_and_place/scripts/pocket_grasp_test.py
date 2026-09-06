@@ -213,6 +213,30 @@ def attempt(node, target_name, palm_down, preshape):
     node.send_arm_trajectory(grasp[0], 3.0)
     settle(node, 20.0)
 
+    # Close the loop on the wrist, the same way full_layer_grasp.py does. A single
+    # trajectory lands 0.043-0.395m off depending on the run, and the apple's radius is
+    # only 0.055m -- so a one-shot move puts the hand roughly an apple-width away and
+    # the fingers close beside it. Measuring the real error and re-solving for a
+    # target offset by it converges to ~0.015m in the main pipeline.
+    corrected = list(wrist_target)
+    for correction_i in range(3):
+        real_now = node.real_wrist_position()
+        if real_now is None:
+            break
+        err_now = float(np.linalg.norm(np.array(real_now) - wrist_target))
+        if err_now < 0.02:
+            break
+        error_vec = wrist_target - np.array(real_now)
+        corrected = list(np.array(corrected) + error_vec)
+        again = solve_ik(node.chain, corrected, target_rotation=rot)
+        if again is None:
+            print(f"  correction {correction_i + 1}: corrected target unreachable, "
+                  f"keeping {err_now:.3f}m error")
+            break
+        print(f"  correction {correction_i + 1}: err {err_now:.3f}m -> re-solving")
+        node.send_arm_trajectory(again[0], 2.0)
+        settle(node, 15.0)
+
     real = node.real_wrist_position()
     if real:
         err = float(np.linalg.norm(np.array(real) - wrist_target))

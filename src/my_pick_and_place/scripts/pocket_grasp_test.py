@@ -127,7 +127,12 @@ HOLD_DISTANCE = 0.20
 # Fraction of the measured wrist error to correct per iteration. Full
 # correction overshoots and oscillates; damping it converges.
 CORRECTION_GAIN = 0.6
-CORRECTION_ITERS = 5
+# Attempt 1 of the thumb-last run converged 0.233 -> 0.150 -> 0.113 -> 0.075 -> 0.058
+# and then simply ran out of iterations, starting the grasp with the arm still 0.031m
+# out and still moving -- it knocked the apple 0.219m during the descent. It was
+# improving the whole way, so give it room to finish. Attempts that start close still
+# converge in one pass and cost nothing.
+CORRECTION_ITERS = 9
 
 
 def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):

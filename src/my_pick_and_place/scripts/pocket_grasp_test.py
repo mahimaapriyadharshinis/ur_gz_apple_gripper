@@ -121,11 +121,23 @@ PALM_OFFSET = 0.0900
 LATERAL = 0.015
 
 CASES = [
-    # (palm_tilt, preshape, lateral, palm_offset)
-    (PALM_TILT, 0.3, LATERAL, PALM_OFFSET),
-    (PALM_TILT, 0.3, LATERAL, PALM_OFFSET),
-    (PALM_TILT, 0.2, LATERAL, PALM_OFFSET),
-    (PALM_TILT, 0.4, LATERAL, PALM_OFFSET),
+    # (palm_tilt, preshape, lateral, squeeze_extra)
+    #
+    # The squeeze is now the variable, because it is the phase that loses the apple.
+    # Every attempt that reaches the fruit shows the same sequence: fingers hit 1.500Nm,
+    # the joint cap and unambiguous hard contact, then the squeeze runs and they finish
+    # at 0.00-0.02Nm holding nothing, with the apple 4.7-5.1cm further away. It was added
+    # to stop fingers merely touching, but each finger contacts at a different moment and
+    # then drives 0.12 rad further on its own, so the first one there shoves the apple
+    # away from the rest.
+    #
+    # preshape 0.4 is fixed: it produced the best contact geometry yet measured, 3 of 4
+    # fingers BELOW the apple's equator (middle -19mm, ring -10mm, pinky -7mm) with the
+    # thumb above at +12mm -- fingers under the widest point, thumb over it.
+    (PALM_TILT, 0.4, LATERAL, 0.00),   # no squeeze at all
+    (PALM_TILT, 0.4, LATERAL, 0.02),
+    (PALM_TILT, 0.4, LATERAL, 0.05),
+    (PALM_TILT, 0.4, LATERAL, 0.12),   # control: what every run so far has used
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -410,7 +422,7 @@ def thumb_tip_clearance(node):
 
 
 def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
-                      thumb_yaw=THUMB_GRASP_YAW):
+                      thumb_yaw=THUMB_GRASP_YAW, squeeze_extra=SQUEEZE_EXTRA):
     """Close the four fingers first, then bring the thumb in last.
 
     The thumb tip sits at hand-frame x=0.119 while the apple spans x=0.008 to 0.119 --
@@ -521,8 +533,13 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     print("  fingers wrapped: %d/4" % sum(1 for g in fingers if contacted[g]))
 
     # Squeeze phase: close past first contact so the fingers actually hold.
+    # Measure what the squeeze itself costs. Fingers reach 1.500Nm -- the joint cap,
+    # genuine hard contact -- and then finish at 0.00-0.02Nm holding nothing, while the
+    # apple moves 4.7-5.1cm in that same phase. The squeeze is the prime suspect for
+    # pushing the apple out of the hand it just closed around.
+    before_squeeze = apple_xyz(node)
     squeezed = 0.0
-    while squeezed < SQUEEZE_EXTRA:
+    while squeezed < squeeze_extra:
         squeezed += SQUEEZE_STEP
         for g in FINGER_GROUPS:
             if not contacted[g]:
@@ -537,6 +554,13 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
             for g in FINGER_GROUPS:
                 _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
                 peak[g] = max(peak[g], abs(eff or 0.0))
+
+    after_squeeze = apple_xyz(node)
+    if before_squeeze is not None and after_squeeze is not None:
+        moved = float(np.linalg.norm(np.array(after_squeeze) - np.array(before_squeeze)))
+        print(f"  the squeeze itself moved the apple {moved:.3f}m"
+              + ("" if moved < 0.010
+                 else "  <-- the squeeze is pushing the apple out of the hand"))
 
     holding = {g: abs(node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))[2] or 0.0)
                for g in FINGER_GROUPS}
@@ -564,9 +588,9 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
-    label = (f"tilt {np.degrees(palm_tilt):.0f}deg, "
-             f"lateral {lateral * 1000:+.0f}mm")
+def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
+    label = (f"squeeze {squeeze_extra:.2f} rad, "
+             f"preshape {preshape:.1f}")
     print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
     rot = tilted_palm_rotation(palm_tilt)
 
@@ -579,7 +603,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
         # other threw it 3.4m off the table. Neither measured anything about the grasp.
         print("  SKIPPED: the apple would not stop moving, so this attempt would "
               "measure nothing.")
-        return {"ok": False, "palm_offset": palm_offset, "lateral": lateral, "palm_tilt": palm_tilt,
+        return {"ok": False, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "palm_tilt": palm_tilt,
                 "unsettled": True}
     for _ in range(20):
         rclpy.spin_once(node, timeout_sec=0.1)
@@ -609,7 +633,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
     if rough is None:
         print("  rough solve UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
     # Where in the hand the apple should sit. The first two components stay as
@@ -629,7 +653,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
     # the pinky and peak at 0.023Nm, which is BELOW the 0.046Nm free-air noise. They
     # never touch it. They sweep past beside it, which is the gap the apple escapes
     # through.
-    aim_point = np.array([palm_offset,
+    aim_point = np.array([PALM_OFFSET,
                           _CLOSED_CENTROID_MEASURED[1] + lateral,
                           AIM_DEPTH])
     offset_local = wrist_rot @ aim_point
@@ -659,7 +683,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
     if approach is None or grasp is None:
         print("  UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "ok": False}
 
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
@@ -717,7 +741,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
         print("  ABORT: cannot read the wrist position -- the TF tree is broken, which "
               "means the simulation has stopped publishing joint states.")
         print("  Restart the simulation (Terminal 1) before running this again.")
-        return {"ok": False, "palm_offset": palm_offset, "lateral": lateral, "palm_tilt": palm_tilt,
+        return {"ok": False, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "palm_tilt": palm_tilt,
                 "dead_sim": True}
     err = float(np.linalg.norm(np.array(real) - wrist_target))
     print(f"  wrist real ({real[0]:.3f}, {real[1]:.3f}, {real[2]:.3f}) err={err:.3f}m")
@@ -869,7 +893,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
                 lifted = None
 
     return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral,
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra,
             "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 
@@ -909,8 +933,8 @@ def main():
         return
 
     results = []
-    for pt, ps, lat, po in CASES:
-        r = attempt(node, target_name, pt, ps, lat, po)
+    for pt, ps, lat, sq in CASES:
+        r = attempt(node, target_name, pt, ps, lat, sq)
         results.append(r)
         if r.get("dead_sim"):
             print()
@@ -921,7 +945,7 @@ def main():
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            nm = f"preshape={r['preshape']:.1f}"
+            nm = f"squeeze={r['squeeze_extra']:.2f}"
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
             print(f"{nm:>22} {why:>9}")
@@ -929,7 +953,7 @@ def main():
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = f"preshape={r['preshape']:.1f}"
+        nm = f"squeeze={r['squeeze_extra']:.2f}"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

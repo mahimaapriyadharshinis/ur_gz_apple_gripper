@@ -41,6 +41,7 @@ from full_layer_grasp import (
     PALM_DOWN_ROTATION,
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
     THUMB_GRASP_YAW, THUMB_GRASP_ROLL,
+    FINGERTIP_LINK, TABLE_TOP_Z,
 )
 
 # Fingertip centroid at full closure, in the hand's own frame, measured via TF with
@@ -94,12 +95,19 @@ CASES = [
     #
     # aim_depth settled by measurement: aiming at the palm (0.060, 0.085) drove the
     # PALM into the apple, knocking it 0.697m and 1.747m before a finger moved, while
-    # 0.110 kept it to 0.008m and got 3/5 contacts. So the apple sits partway out
-    # along the fingers, not against the palm and not right at the tips.
-    (True, 0.3, 0.0, 0.110),
-    (True, 0.3, 0.0, 0.110),
-    (True, 0.0, 0.0, 0.110),
-    (True, 0.0, 0.0, 0.120),
+    # 0.110 kept it to 0.008m. So the apple sits partway out along the fingers.
+    #
+    # thumb_yaw back to -0.50, and this time for a measured reason. With yaw=0 the
+    # thumb protrudes 0.1190m below the palm; with the wrist at 0.521 and the palm
+    # facing down that puts the thumb tip at 0.402 against a table top of 0.400 -- it
+    # is driven INTO the table, which is why it read 18.4/69.8/16.5Nm while every
+    # other finger sat at its 1.50 cap. yaw=-0.50 protrudes 0.0946m instead, putting
+    # the tip at 0.426 (26mm of clearance), and still leaves a 0.135m thumb-to-finger
+    # gap against a 0.111m apple. One case keeps yaw=0.0 as a control.
+    (True, 0.3, -0.50, 0.110),
+    (True, 0.3, -0.50, 0.110),
+    (True, 0.3,  0.00, 0.110),
+    (True, 0.3, -0.50, 0.120),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -165,6 +173,17 @@ CONTACT_THRESHOLD = 0.075
 SQUEEZE_EXTRA = 0.12
 SQUEEZE_STEP = 0.006
 SQUEEZE_FORCE_CAP = 3.0
+
+
+def thumb_tip_clearance(node):
+    """Height of the thumb tip above the table top, in metres (None if TF fails)."""
+    try:
+        t = node.tf_buffer.lookup_transform(
+            'base_footprint', FINGERTIP_LINK["R_Thumb"], rclpy.time.Time(),
+            timeout=rclpy.duration.Duration(seconds=1.0))
+        return float(t.transform.translation.z) - TABLE_TOP_Z
+    except Exception:
+        return None
 
 
 def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
@@ -393,6 +412,18 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw, aim_depth):
         print(f"  palm normal ({palm[0]:+.2f}, {palm[1]:+.2f}, {palm[2]:+.2f}) -- "
               f"{tilt:.0f}deg from straight down "
               f"({'PARALLEL to ground' if tilt < 25 else 'NOT parallel'})")
+
+    # Direct check that the thumb is not stabbing the table. Arithmetic said it was:
+    # thumb protrudes 0.1190m below the palm, wrist at 0.521, palm facing down puts the
+    # tip at 0.402 against a 0.400 table. That matches the measured effort exactly --
+    # 18.4/69.8/16.5Nm on the thumb while every other finger sat at its 1.50 cap, which
+    # is a joint pressed into something solid, not a motor pushing an apple. Measure it
+    # rather than trusting the arithmetic.
+    thumb_clear = thumb_tip_clearance(node)
+    if thumb_clear is not None:
+        print(f"  thumb tip is {thumb_clear * 1000:+.0f}mm above the table"
+              + ("" if thumb_clear > 0.010
+                 else "  <-- GROUNDED OUT: it is pushing the table, not the apple"))
 
     # Split the measurement: how far did the apple move during the DESCENT, before a
     # single finger moved? The fingers read 0.044Nm (baseline noise) while the apple

@@ -146,15 +146,21 @@ PRESHAPE = 0.4
 CASES = [
     # (palm_tilt, preshape, lateral, palm_offset)
     #
-    # 0.090 is the back-off that produced the pick. Repeating it four times gave four
-    # failures, because the arm landed the wrist 4-6mm lower those times and that is
-    # enough to bury the fingertips in the apple before closing starts. The tolerance
-    # above now demands 8mm instead of 20mm, and these also probe a few mm more
-    # clearance in case the arm cannot hold the tighter figure under its own weight.
-    (PALM_TILT, PRESHAPE, LATERAL, 0.090),   # the configuration that picked the apple up
-    (PALM_TILT, PRESHAPE, LATERAL, 0.096),
-    (PALM_TILT, PRESHAPE, LATERAL, 0.102),
-    (PALM_TILT, PRESHAPE, LATERAL, 0.090),   # repeat, to see how much it varies
+    # The arm settles roughly 10mm higher than commanded and the correction cannot pull
+    # it down -- it stalls, reporting the same error nine times. Rather than fight that,
+    # aim lower to compensate.
+    #
+    # It matters because height decides the whole grasp. The successful pick had the
+    # wrist at 0.597 and met the apple at -16, -19, -9 and -5mm: four contacts BELOW its
+    # equator, which is what lifts it. This run sat at 0.606-0.617 and met it at +4, -9,
+    # +5 and +9mm -- mostly above the equator, which just presses the apple down, and the
+    # lift fell from 0.085m to 0.012m.
+    #
+    # 0.090 landed the wrist ~12mm high, so these take that back off.
+    (PALM_TILT, PRESHAPE, LATERAL, 0.078),
+    (PALM_TILT, PRESHAPE, LATERAL, 0.084),
+    (PALM_TILT, PRESHAPE, LATERAL, 0.090),   # what the pick used, as the control
+    (PALM_TILT, PRESHAPE, LATERAL, 0.078),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -734,6 +740,8 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
     # the fingers close beside it. Measuring the real error and re-solving for a
     # target offset by it converges to ~0.015m in the main pipeline.
     corrected = list(wrist_target)
+    last_err = None
+    stalled = 0
     for correction_i in range(CORRECTION_ITERS):
         real_now = node.real_wrist_position()
         if real_now is None:
@@ -741,6 +749,21 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
         err_now = float(np.linalg.norm(np.array(real_now) - wrist_target))
         if err_now < WRIST_TOLERANCE:
             break
+        # Give up once the correction has stopped achieving anything. Measured, the loop
+        # ran all nine iterations reporting err 0.014m every single time -- the arm was
+        # not responding at all, because at this reach and tilt it is holding against
+        # gravity at the limit of what it can do. Nine pointless re-solves cost a minute
+        # per attempt and set the arm swinging, and in one attempt that swinging knocked
+        # the apple 0.302m before a finger moved.
+        if last_err is not None and abs(last_err - err_now) < 0.001:
+            stalled += 1
+            if stalled >= 2:
+                print(f"  correction stalled at {err_now:.3f}m -- the arm cannot get "
+                      f"closer, continuing from here")
+                break
+        else:
+            stalled = 0
+        last_err = err_now
         # Apply only part of the measured error. Feeding the FULL error back made the
         # loop overshoot and bounce rather than settle -- measured sequences like
         # 0.062 -> 0.034 -> 0.036 and 0.052 -> 0.052 -> 0.049 that never converge.

@@ -286,6 +286,13 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw, aim_depth):
             "thumb_yaw": thumb_yaw, "aim_depth": aim_depth, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
+    # Where in the hand the apple should sit. The first two components stay as
+    # measured; aim_depth replaces the third -- how far out along the fingers -- so the
+    # sweep can compare holding the apple against the palm (~0.06) against holding it
+    # at the fingertips (0.128, what we had been doing).
+    aim_point = np.array([_CLOSED_CENTROID_MEASURED[0],
+                          _CLOSED_CENTROID_MEASURED[1],
+                          aim_depth])
     offset_local = wrist_rot @ aim_point
     wrist_target = apple_local - offset_local
 

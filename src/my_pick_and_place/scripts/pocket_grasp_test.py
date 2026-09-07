@@ -103,29 +103,29 @@ PALM_TILT = np.radians(30.0)
 # 0.085 drove the palm into the apple; 0.120 gave the evenest fingertip spread.
 AIM_DEPTH = 0.120
 
-# Tilt 45deg with 0.090 back-off is the best geometry found: it is the only setting
-# that has put a finger BELOW the apple's equator (ring at -12mm) with the pinky on it
-# at +2mm. 30deg gets more fingers but all of them 13-26mm above the equator, where
-# squeezing pushes the apple down and out; 60deg misses entirely.
+# Settled by measurement.
 #
-# What 45deg does not fix is that index and middle never touch the apple at all. They
-# start 14-16mm further from it than the pinky and peak at 0.023Nm -- below the 0.046Nm
-# free-air noise floor -- so they close past it into empty space. The apple is sitting
-# off to the ring/pinky side of the hand rather than in the middle of the four fingers,
-# which is the gap it keeps escaping through.
+# LATERAL +15mm centres the apple across the four fingers: their distances to it come
+# out within 2mm of each other, against 11mm at the old aim, 24mm at -15mm and 11mm at
+# +30mm. That matters because at the old aim index and middle peaked at 0.023Nm --
+# BELOW the free-air noise floor, i.e. never touching the apple at all -- and at +15mm
+# they peak at 1.500Nm, the joint cap. They went from missing the fruit to gripping it,
+# and dropped below its equator (index -1mm, middle -6mm) for the first time.
 #
-# The cause is in the aim itself. The across-the-hand target has always been the mean of
-# all FIVE fingertips, and the thumb sits well off to one side, so that mean is pulled
-# away from the four fingers' own centre line. This sweeps that offset.
+# Both centred cases lifted the apple: +0.043m at +15mm and +0.048m at +30mm.
+#
+# Tilt 45deg / back-off 0.090 unchanged -- the only pairing that puts fingers on and
+# below the apple's widest circle.
 PALM_TILT = np.radians(45.0)
 PALM_OFFSET = 0.0900
+LATERAL = 0.015
 
 CASES = [
     # (palm_tilt, preshape, lateral, palm_offset)
-    (PALM_TILT, 0.3,  0.000, PALM_OFFSET),   # control: the five-fingertip mean
-    (PALM_TILT, 0.3, -0.015, PALM_OFFSET),
-    (PALM_TILT, 0.3, +0.015, PALM_OFFSET),
-    (PALM_TILT, 0.3, +0.030, PALM_OFFSET),
+    (PALM_TILT, 0.3, LATERAL, PALM_OFFSET),
+    (PALM_TILT, 0.3, LATERAL, PALM_OFFSET),
+    (PALM_TILT, 0.2, LATERAL, PALM_OFFSET),
+    (PALM_TILT, 0.4, LATERAL, PALM_OFFSET),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -219,6 +219,11 @@ THUMB_PRELOAD_STEP = 0.002
 # How far above free-air closing noise a reading must be to count as real contact.
 CONTACT_MARGIN = 2.0
 
+# A reading at or above this during a FREE-AIR close is the hand touching itself, not
+# noise: the joint effort cap is 1.5Nm and both the pinky and thumb reached exactly that
+# with nothing in the hand.
+SELF_COLLISION_NM = 0.8
+
 
 # The gripper camera is not just a sensor: ur5e_dexhand.xacro gives gripper_camera_link
 # a 0.04 x 0.04 x 0.02m COLLISION box, mounted 0.06m off the hand's centre line at
@@ -268,7 +273,13 @@ def calibrate_contact_threshold(node):
     for _ in range(30):
         rclpy.spin_once(node, timeout_sec=0.1)
 
-    peak = {g: 0.0 for g in FINGER_GROUPS}
+    # Keep every sample, not a running maximum. A hand closing on nothing still ends up
+    # touching ITSELF -- measured directly, the pinky and thumb both hit their 1.500Nm
+    # joint cap during a free-air close, which is a collision with the palm or each
+    # other, not noise. Taking the maximum let that one spike set the threshold to
+    # 3.000Nm, and the next grasp then discarded a pinky that reached 1.500Nm on the
+    # apple, because 1.500 < 3.000. The calibration threw away a working finger.
+    samples = {g: [] for g in FINGER_GROUPS}
     pos = 0.0
     while pos < MAX_PITCH_CEILING:
         pos = min(pos + CLOSE_STEP, MAX_PITCH_CEILING)
@@ -278,7 +289,19 @@ def calibrate_contact_threshold(node):
             rclpy.spin_once(node, timeout_sec=0.08)
             for g in FINGER_GROUPS:
                 _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
-                peak[g] = max(peak[g], abs(eff or 0.0))
+                samples[g].append(abs(eff or 0.0))
+
+    # 90th percentile, not the peak: self-collision happens only in the last part of the
+    # closure, so it is a small minority of samples and a percentile ignores it while
+    # still sitting above ordinary movement noise.
+    peak = {}
+    for g in FINGER_GROUPS:
+        vals = sorted(v for v in samples[g] if v < SELF_COLLISION_NM)
+        if not vals:
+            print(f"  {g.replace('R_', '')} was against something for the WHOLE close "
+                  f"-- cannot calibrate it")
+            return None
+        peak[g] = vals[int(len(vals) * 0.90)] if len(vals) > 1 else vals[0]
 
     node.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.5,
                          thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
@@ -898,7 +921,7 @@ def main():
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            nm = f"lateral={r['lateral'] * 1000:+.0f}mm"
+            nm = f"preshape={r['preshape']:.1f}"
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
             print(f"{nm:>22} {why:>9}")
@@ -906,7 +929,7 @@ def main():
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = f"lateral={r['lateral'] * 1000:+.0f}mm"
+        nm = f"preshape={r['preshape']:.1f}"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

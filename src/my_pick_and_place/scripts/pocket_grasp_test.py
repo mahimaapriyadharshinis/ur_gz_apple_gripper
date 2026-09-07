@@ -103,17 +103,30 @@ PALM_TILT = np.radians(30.0)
 # 0.085 drove the palm into the apple; 0.120 gave the evenest fingertip spread.
 AIM_DEPTH = 0.120
 
-# Backing the hand off along the palm normal was tried and made things monotonically
-# worse -- 5/5 contacts at 0.0634, then 1/5, 0/5, 0/5 at 0.0734/0.0834/0.0934, with the
-# apple thrown 0.432m, 3.642m and 0.262m. Back to the measured centroid.
+# Tilt and back-off were each swept alone, which could not find the combination that
+# matters. Sweeping tilt at a fixed 0.0634 back-off: 30deg was best, but 45deg and 60deg
+# put the fingertips 9-14mm INSIDE the apple before closing, so they failed on depth
+# rather than on angle. Sweeping back-off alone at 30deg only made things worse.
+#
+# So pair them. The measured penetration at each tilt says how much back-off that tilt
+# needs to start the fingers ~15mm clear of the apple:
+#   45deg measured a mean gap of -11.5mm at 0.0634 -> needs about 0.090
+#   60deg measured a mean gap of  +2.0mm at 0.0634 -> needs about 0.076
+#
+# This matters because contact height still is not low enough. At 30deg the fingers meet
+# the apple 13-18mm ABOVE its equator (pinky 24-26mm) while the thumb is 3-5mm below, so
+# after the squeeze all four fingers hold 0.04Nm and the thumb alone presses at 3.8-6.4Nm
+# -- it is shoving the apple out rather than trapping it. More tilt should bring the
+# fingers down onto the equator, if the depth is corrected at the same time.
+PALM_TILT = np.radians(30.0)
 PALM_OFFSET = 0.0634
 
 CASES = [
     # (palm_tilt, preshape, thumb_yaw, palm_offset)
-    (PALM_TILT, 0.3, -0.50, PALM_OFFSET),
-    (PALM_TILT, 0.3, -0.50, PALM_OFFSET),
-    (PALM_TILT, 0.5, -0.50, PALM_OFFSET),
-    (PALM_TILT, 0.5, -0.50, PALM_OFFSET),
+    (np.radians(30.0), 0.3, -0.50, 0.0634),   # control: the known 5/5 configuration
+    (np.radians(45.0), 0.3, -0.50, 0.0900),
+    (np.radians(60.0), 0.3, -0.50, 0.0760),
+    (np.radians(45.0), 0.3, -0.50, 0.1000),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -183,6 +196,9 @@ STEP_COMMAND_TIME = 0.30
 # which is exactly the 0.01-0.04Nm holding force every run ends with.
 CONTACT_THRESHOLD = 0.075
 
+# Filled in per finger by calibrate_contact_threshold(); falls back to the flat value.
+CONTACT_THRESHOLD_BY_FINGER = {}
+
 # After every finger has touched, squeeze a little further to actually GRIP.
 #
 # Freezing each finger the instant it feels contact produced touch without grip:
@@ -238,19 +254,19 @@ def calibrate_contact_threshold(node):
     for _ in range(20):
         rclpy.spin_once(node, timeout_sec=0.1)
 
-    worst = max(peak.values()) if peak else 0.0
     print("  closing in free air, peak effort per finger: "
           + ", ".join("%s=%.3f" % (g.replace("R_", ""), peak[g]) for g in FINGER_GROUPS))
-    if worst <= 0.0:
+    if max(peak.values(), default=0.0) <= 0.0:
         print("  could not measure -- keeping the existing threshold")
         return None
-    thresh = max(worst * CONTACT_MARGIN, worst + 0.05)
-    print(f"  a moving finger touching NOTHING reaches {worst:.3f}Nm, so contact is "
-          f"only credible above {thresh:.3f}Nm")
-    if thresh > CONTACT_THRESHOLD:
-        print(f"  the old threshold of {CONTACT_THRESHOLD:.3f}Nm was BELOW that -- it "
-              f"has been reporting movement as contact")
-    return thresh
+    # Per finger, not one number for all: measured, the four fingers read 0.029Nm moving
+    # in free air while the thumb reads 0.053Nm. Taking the worst of the five and
+    # applying it everywhere makes the fingers 2x less sensitive than they need to be,
+    # for no reason other than the thumb being noisier.
+    out = {g: max(peak[g] * CONTACT_MARGIN, peak[g] + 0.05) for g in FINGER_GROUPS}
+    print("  contact is only credible above: "
+          + ", ".join("%s=%.3f" % (g.replace("R_", ""), out[g]) for g in FINGER_GROUPS))
+    return out
 
 
 def tilted_palm_rotation(tilt_rad):
@@ -368,7 +384,8 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
             _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
             eff = abs(eff or 0.0)
             peak[g] = max(peak[g], eff)
-            if eff > CONTACT_THRESHOLD and not contacted[g]:
+            limit = CONTACT_THRESHOLD_BY_FINGER.get(g, CONTACT_THRESHOLD)
+            if eff > limit and not contacted[g]:
                 if apple_local is not None and radius is not None:
                     if not node.fingertips_near_apple(apple_local, radius).get(g):
                         continue
@@ -796,10 +813,10 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    global CONTACT_THRESHOLD
+    global CONTACT_THRESHOLD_BY_FINGER
     measured = calibrate_contact_threshold(node)
     if measured is not None:
-        CONTACT_THRESHOLD = measured
+        CONTACT_THRESHOLD_BY_FINGER = measured
 
     if not simulation_alive(node):
         print()
@@ -825,7 +842,8 @@ def main():
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            nm = f"back-off={r['palm_offset']:.3f}m"
+            nm = (f"{np.degrees(r['palm_tilt']):.0f}deg/"
+                  f"{r['palm_offset']:.3f}m")
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
             print(f"{nm:>22} {why:>9}")
@@ -833,7 +851,8 @@ def main():
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = f"back-off={r['palm_offset']:.3f}m"
+        nm = (f"{np.degrees(r['palm_tilt']):.0f}deg/"
+                  f"{r['palm_offset']:.3f}m")
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

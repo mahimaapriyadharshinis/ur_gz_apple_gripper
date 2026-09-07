@@ -103,19 +103,17 @@ PALM_TILT = np.radians(30.0)
 # 0.085 drove the palm into the apple; 0.120 gave the evenest fingertip spread.
 AIM_DEPTH = 0.120
 
+# Backing the hand off along the palm normal was tried and made things monotonically
+# worse -- 5/5 contacts at 0.0634, then 1/5, 0/5, 0/5 at 0.0734/0.0834/0.0934, with the
+# apple thrown 0.432m, 3.642m and 0.262m. Back to the measured centroid.
+PALM_OFFSET = 0.0634
+
 CASES = [
     # (palm_tilt, preshape, thumb_yaw, palm_offset)
-    #
-    # palm_offset -- how far the hand holds off the apple along the palm normal -- is
-    # the variable now. 0.0634 is the measured closed-fingertip centroid and is what
-    # every run so far has used; at 30deg tilt it puts the fingertips at a mean of
-    # -0.5mm, i.e. already inside the apple, so closing has nowhere to go and the
-    # fingers register 0.11-0.13Nm and then hold nothing. These back the hand off in
-    # 10mm steps, keeping 0.0634 as the control.
-    (PALM_TILT, 0.3, -0.50, 0.0634),
-    (PALM_TILT, 0.3, -0.50, 0.0734),
-    (PALM_TILT, 0.3, -0.50, 0.0834),
-    (PALM_TILT, 0.3, -0.50, 0.0934),
+    (PALM_TILT, 0.3, -0.50, PALM_OFFSET),
+    (PALM_TILT, 0.3, -0.50, PALM_OFFSET),
+    (PALM_TILT, 0.5, -0.50, PALM_OFFSET),
+    (PALM_TILT, 0.5, -0.50, PALM_OFFSET),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -174,6 +172,15 @@ STEP_COMMAND_TIME = 0.30
 # The four fingers idle at 0.043-0.046Nm, so anything meaningfully above that is real
 # contact. The old 0.12Nm threshold sat far enough above the noise that a finger had
 # already begun pushing before it tripped.
+# Set at runtime by calibrate_contact_threshold(). The old fixed 0.075 was chosen
+# against the IDLE noise floor (0.032-0.046Nm), but the fingers are MOVING when they
+# close, and a moving finger appears to read far more than that on its own. The evidence:
+# attempts reporting 5/5 contacts had index, middle and ring peaking at 0.198/0.204/0.206
+# and at 0.133/0.129/0.122 -- near-identical across three fingers, which is a common
+# cause, not three separate collisions -- while a finger genuinely on the apple reads its
+# 1.500Nm cap. If closing noise alone crosses 0.075 then every finger "contacts"
+# immediately, freezes short of the fruit, and the squeeze drives it into empty air,
+# which is exactly the 0.01-0.04Nm holding force every run ends with.
 CONTACT_THRESHOLD = 0.075
 
 # After every finger has touched, squeeze a little further to actually GRIP.
@@ -193,6 +200,57 @@ SQUEEZE_FORCE_CAP = 3.0
 THUMB_PRELOAD_EXTRA = 0.10
 THUMB_PRELOAD_FORCE = 1.2
 THUMB_PRELOAD_STEP = 0.002
+
+# How far above free-air closing noise a reading must be to count as real contact.
+CONTACT_MARGIN = 2.0
+
+
+def calibrate_contact_threshold(node):
+    """Close the hand in free air and measure what a MOVING finger reads with nothing
+    to touch. Returns a threshold safely above that, or None if it cannot measure.
+
+    Everything downstream depends on telling "this finger is on the apple" from "this
+    finger is moving", and that line has never actually been measured -- only assumed
+    from the idle noise floor, which is a different quantity.
+    """
+    print("Calibrating: closing the hand in free air to measure moving-finger noise...")
+    node.send_arm_trajectory(REST_POSE, 4.0)
+    settle(node, 8.0)
+    node.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.5,
+                         thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
+    for _ in range(30):
+        rclpy.spin_once(node, timeout_sec=0.1)
+
+    peak = {g: 0.0 for g in FINGER_GROUPS}
+    pos = 0.0
+    while pos < MAX_PITCH_CEILING:
+        pos = min(pos + CLOSE_STEP, MAX_PITCH_CEILING)
+        node.command_fingers({g: pos for g in FINGER_GROUPS}, STEP_COMMAND_TIME,
+                             thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
+        for _ in range(CHECKS_PER_STEP):
+            rclpy.spin_once(node, timeout_sec=0.08)
+            for g in FINGER_GROUPS:
+                _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
+                peak[g] = max(peak[g], abs(eff or 0.0))
+
+    node.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.5,
+                         thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
+    for _ in range(20):
+        rclpy.spin_once(node, timeout_sec=0.1)
+
+    worst = max(peak.values()) if peak else 0.0
+    print("  closing in free air, peak effort per finger: "
+          + ", ".join("%s=%.3f" % (g.replace("R_", ""), peak[g]) for g in FINGER_GROUPS))
+    if worst <= 0.0:
+        print("  could not measure -- keeping the existing threshold")
+        return None
+    thresh = max(worst * CONTACT_MARGIN, worst + 0.05)
+    print(f"  a moving finger touching NOTHING reaches {worst:.3f}Nm, so contact is "
+          f"only credible above {thresh:.3f}Nm")
+    if thresh > CONTACT_THRESHOLD:
+        print(f"  the old threshold of {CONTACT_THRESHOLD:.3f}Nm was BELOW that -- it "
+              f"has been reporting movement as contact")
+    return thresh
 
 
 def tilted_palm_rotation(tilt_rad):
@@ -737,6 +795,11 @@ def main():
         rclpy.spin_once(node, timeout_sec=0.1)
         if node.arm_pub.get_subscription_count() > 0:
             break
+
+    global CONTACT_THRESHOLD
+    measured = calibrate_contact_threshold(node)
+    if measured is not None:
+        CONTACT_THRESHOLD = measured
 
     if not simulation_alive(node):
         print()

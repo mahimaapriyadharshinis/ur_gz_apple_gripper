@@ -177,6 +177,31 @@ SQUEEZE_EXTRA = 0.12
 SQUEEZE_STEP = 0.006
 SQUEEZE_FORCE_CAP = 3.0
 
+# How far past first contact to drive the thumb before the fingers close, and the force
+# at which to stop. First contact alone measured 0.103-0.284Nm, which the fingers then
+# overwhelmed at 1.5-5.9Nm.
+THUMB_PRELOAD_EXTRA = 0.10
+THUMB_PRELOAD_FORCE = 1.2
+
+
+def fingertip_height_vs_apple(node, group, apple_local):
+    """Fingertip height minus the apple's centre height, in metres.
+
+    Positive means the finger met the apple above its equator. A sphere resting on a
+    table can only be reached on its upper half from above, and contacts confined to
+    the upper half push it down and out instead of trapping it -- so this distinguishes
+    "not pressing hard enough" from "pressing in a place that cannot lift".
+    """
+    if apple_local is None:
+        return None
+    try:
+        t = node.tf_buffer.lookup_transform(
+            'base_footprint', FINGERTIP_LINK[group], rclpy.time.Time(),
+            timeout=rclpy.duration.Duration(seconds=0.5))
+        return float(t.transform.translation.z) - float(apple_local[2])
+    except Exception:
+        return None
+
 
 def fingertip_gaps(node, apple_local, radius):
     """Each fingertip's distance to the apple's SURFACE, in the robot frame.
@@ -237,6 +262,12 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     """
     contacted = {g: False for g in FINGER_GROUPS}
     peak = {g: 0.0 for g in FINGER_GROUPS}
+    # Height of each fingertip, relative to the apple's own centre, at the moment it
+    # first makes contact. This is the question force readings cannot answer: a sphere
+    # resting on a table can only be reached on its TOP half from above, and squeezing
+    # the top half of a sphere drives it down and out rather than into the hand. If
+    # every contact is above the equator the grasp cannot lift, however hard it presses.
+    contact_height = {g: None for g in FINGER_GROUPS}
     current = {g: start_pitch for g in FINGER_GROUPS}
     # Thumb held wide open while the fingers work.
     current["R_Thumb"] = 0.0
@@ -251,6 +282,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                     if not node.fingertips_near_apple(apple_local, radius).get(g):
                         continue
                 contacted[g] = True
+                contact_height[g] = fingertip_height_vs_apple(node, g, apple_local)
                 pos = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
                 if pos is not None:
                     current[g] = pos
@@ -289,8 +321,28 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     # light backstop, not a squeeze.
     print("  thumb closing to first contact, to give the fingers a backstop...")
     drive(["R_Thumb"], MAX_PITCH_CEILING)
-    print("  thumb %s -- now closing the four fingers against it"
-          % ("in contact" if contacted["R_Thumb"] else "found nothing"))
+    # First contact alone is far too light to oppose anything: measured at 0.284Nm and
+    # 0.103Nm while the fingers then pressed at 1.5-5.9Nm, so the "backstop" simply gave
+    # way. Close the thumb a further fixed amount, capped by force, so it is genuinely
+    # bearing on the apple before the fingers arrive.
+    if contacted["R_Thumb"]:
+        pushed = 0.0
+        while pushed < THUMB_PRELOAD_EXTRA:
+            _, _, eff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
+            if abs(eff or 0.0) >= THUMB_PRELOAD_FORCE:
+                break
+            pushed += SQUEEZE_STEP
+            current["R_Thumb"] = min(current["R_Thumb"] + SQUEEZE_STEP, MAX_PITCH_CEILING)
+            node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
+                                 thumb_roll=THUMB_GRASP_ROLL)
+            for _ in range(CHECKS_PER_STEP):
+                rclpy.spin_once(node, timeout_sec=0.08)
+        _, _, teff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
+        peak["R_Thumb"] = max(peak["R_Thumb"], abs(teff or 0.0))
+        print(f"  thumb preloaded to {abs(teff or 0.0):.2f}Nm -- now closing the four "
+              f"fingers against it")
+    else:
+        print("  thumb found nothing -- the fingers will have no backstop")
     drive(fingers, MAX_PITCH_CEILING)
     print("  fingers wrapped: %d/4" % sum(1 for g in fingers if contacted[g]))
 
@@ -317,6 +369,17 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     n_sq = sum(1 for g in FINGER_GROUPS if contacted[g])
     print(f"  after squeeze ({n_sq}/5 fingers had contact to squeeze), holding force: "
           + ", ".join("%s=%.2f" % (g, holding[g]) for g in FINGER_GROUPS))
+
+    known = {g: h for g, h in contact_height.items() if h is not None}
+    if known:
+        print("  where each finger met the apple (+ is above its equator, - is below):")
+        print("    " + ", ".join(f"{g.replace('R_', '')}={h * 1000:+.0f}mm"
+                                 for g, h in known.items()))
+        below = [g for g, h in known.items() if h < 0.0]
+        print(f"    {len(below)}/{len(known)} contacts are BELOW the equator"
+              + ("" if below else
+                 "  <-- every contact is on the TOP half: squeezing drives the apple "
+                 "down and out, and nothing holds it up during the lift"))
     return contacted, peak
 
 

@@ -586,7 +586,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
     if rough is None:
         print("  rough solve UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
     # Where in the hand the apple should sit. The first two components stay as
@@ -636,7 +636,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
     if approach is None or grasp is None:
         print("  UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
 
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
@@ -730,8 +730,9 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
     # back-driven by contact.
     real_yaw = node.latest_joint_state.get('R_Thumb_Yaw', (None, None, None))[0]
     if real_yaw is not None:
-        drift = abs(real_yaw - thumb_yaw)
-        print(f"  thumb yaw commanded {thumb_yaw:+.2f}, actually at {real_yaw:+.2f}"
+        drift = abs(real_yaw - THUMB_GRASP_YAW)
+        print(f"  thumb yaw commanded {THUMB_GRASP_YAW:+.2f}, "
+              f"actually at {real_yaw:+.2f}"
               + ("" if drift < 0.05 else f"  <-- OFF BY {drift:.2f} rad, being pushed back"))
 
     # Which fingers are actually within reach of the apple BEFORE closing starts?
@@ -845,7 +846,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
                 lifted = None
 
     return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "lateral": lateral,
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral,
             "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 

@@ -144,6 +144,17 @@ STEP_COMMAND_TIME = 0.20
 # already begun pushing before it tripped.
 CONTACT_THRESHOLD = 0.075
 
+# After every finger has touched, squeeze a little further to actually GRIP.
+#
+# Freezing each finger the instant it feels contact produced touch without grip:
+# measured R_Index=0.127, R_Middle=0.114, R_Ring=0.108 -- barely above the 0.075
+# detection threshold, i.e. resting on the apple rather than holding it. The apple
+# then simply stayed behind when the arm lifted. A real hold needs the fingers to
+# keep closing past first contact until they are pressing.
+SQUEEZE_EXTRA = 0.12
+SQUEEZE_STEP = 0.006
+SQUEEZE_FORCE_CAP = 3.0
+
 
 def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                       thumb_yaw=THUMB_GRASP_YAW):
@@ -179,6 +190,29 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                         current[g] = pos
         if all(contacted.values()):
             break
+
+    # Squeeze phase: close past first contact so the fingers actually hold, easing in
+    # gradually and stopping each finger once it is pressing firmly, so this builds
+    # grip rather than punching the apple away.
+    squeezed = 0.0
+    while squeezed < SQUEEZE_EXTRA:
+        squeezed += SQUEEZE_STEP
+        for g in FINGER_GROUPS:
+            _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
+            if abs(eff or 0.0) < SQUEEZE_FORCE_CAP:
+                current[g] = min(current[g] + SQUEEZE_STEP, MAX_PITCH_CEILING)
+        node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
+                             thumb_roll=THUMB_GRASP_ROLL)
+        for _ in range(CHECKS_PER_STEP):
+            rclpy.spin_once(node, timeout_sec=0.08)
+            for g in FINGER_GROUPS:
+                _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
+                peak[g] = max(peak[g], abs(eff or 0.0))
+
+    holding = {g: abs(node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))[2] or 0.0)
+               for g in FINGER_GROUPS}
+    print("  after squeeze, holding force: "
+          + ", ".join("%s=%.2f" % (g, holding[g]) for g in FINGER_GROUPS))
     return contacted, peak
 
 

@@ -180,6 +180,16 @@ SQUEEZE_STEP = 0.006
 SQUEEZE_FORCE_CAP = 3.0
 
 
+def simulation_alive(node, timeout=10.0):
+    """Is the sim publishing a robot state we can actually measure against?"""
+    start = time.time()
+    while time.time() - start < timeout:
+        rclpy.spin_once(node, timeout_sec=0.2)
+        if node.real_wrist_position() is not None:
+            return True
+    return False
+
+
 def thumb_tip_clearance(node):
     """Height of the thumb tip above the table top, in metres (None if TF fails)."""
     try:
@@ -402,9 +412,18 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw, aim_depth):
         settle(node, 15.0)
 
     real = node.real_wrist_position()
-    if real:
-        err = float(np.linalg.norm(np.array(real) - wrist_target))
-        print(f"  wrist real ({real[0]:.3f}, {real[1]:.3f}, {real[2]:.3f}) err={err:.3f}m")
+    if real is None:
+        # No wrist position means the TF tree is broken -- the usual message is
+        # "base_footprint and dexhand_base_link are not part of the same tree", which
+        # means joint data has stopped arriving and the simulation is dead or paused.
+        # Closing the hand at that point measures nothing; a whole run was once spent
+        # grasping blind because this fell through instead of stopping.
+        print("  ABORT: cannot read the wrist position -- the TF tree is broken, which "
+              "means the simulation has stopped publishing joint states.")
+        print("  Restart the simulation (Terminal 1) before running this again.")
+        return {"ok": False, "aim_depth": aim_depth, "dead_sim": True}
+    err = float(np.linalg.norm(np.array(real) - wrist_target))
+    print(f"  wrist real ({real[0]:.3f}, {real[1]:.3f}, {real[2]:.3f}) err={err:.3f}m")
 
     # Verify the PALM actually ended up where it was asked to. The hand's +X axis is
     # the palm normal (fingers along +Z, thumb opposing along +X), so palm-down means
@@ -530,8 +549,25 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    results = [attempt(node, target_name, pd, ps, ty, ad)
-               for pd, ps, ty, ad in CASES]
+    if not simulation_alive(node):
+        print()
+        print("The simulation is not publishing a usable robot state: the TF tree "
+              "from base_footprint to the hand is missing or broken.")
+        print("Nothing measured here would mean anything, so this is stopping now.")
+        print("Restart Terminal 1 (./start_everything.sh gui), wait for the arm to "
+              "appear AND the controller messages to stop, then try again.")
+        node.destroy_node()
+        rclpy.shutdown()
+        return
+
+    results = []
+    for pd, ps, ty, ad in CASES:
+        r = attempt(node, target_name, pd, ps, ty, ad)
+        results.append(r)
+        if r.get("dead_sim"):
+            print()
+            print("Stopping the remaining attempts -- the simulation died mid-run.")
+            break
 
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")

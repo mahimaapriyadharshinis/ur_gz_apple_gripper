@@ -220,6 +220,38 @@ THUMB_PRELOAD_STEP = 0.002
 CONTACT_MARGIN = 2.0
 
 
+# The gripper camera is not just a sensor: ur5e_dexhand.xacro gives gripper_camera_link
+# a 0.04 x 0.04 x 0.02m COLLISION box, mounted 0.06m off the hand's centre line at
+# z=0.08. In hand coordinates it therefore occupies z=0.070 to 0.090 -- and the
+# fingertips converge at z=0.0834, dead centre of that band. The camera sits at exactly
+# the depth the fingers close through, on one side of the hand. The apple itself clears
+# it by 23-44mm at every aim tested, so it is not hitting the fruit; whether a FINGER
+# passes through it has never been measured.
+CAMERA_LINK = "gripper_camera_link"
+CAMERA_HALF_EXTENTS = np.array([0.02, 0.02, 0.01])
+
+
+def camera_clearances(node):
+    """Each fingertip's distance to the camera's collision box surface, in metres.
+
+    Negative means the fingertip is inside the box, i.e. the camera is physically
+    blocking that finger from closing.
+    """
+    out = {}
+    for g, link in FINGERTIP_LINK.items():
+        try:
+            t = node.tf_buffer.lookup_transform(
+                CAMERA_LINK, link, rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.5))
+            p_ = t.transform.translation
+            local = np.array([p_.x, p_.y, p_.z])
+            outside = np.maximum(np.abs(local) - CAMERA_HALF_EXTENTS, 0.0)
+            out[g] = float(np.linalg.norm(outside))
+        except Exception:
+            out[g] = None
+    return out
+
+
 def calibrate_contact_threshold(node):
     """Close the hand in free air and measure what a MOVING finger reads with nothing
     to touch. Returns a threshold safely above that, or None if it cannot measure.
@@ -722,6 +754,16 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
                      if (max(four) - min(four)) < 0.008
                      else "  <-- uneven, the apple is off to one side"))
         reach = [g for g, v in gaps.items() if v is not None and v < 0.05]
+    cam = {g: v for g, v in camera_clearances(node).items() if v is not None}
+    if cam:
+        print("  fingertip clearance to the gripper camera's collision box:")
+        print("    " + ", ".join(f"{g.replace('R_', '')}={v * 1000:+.0f}mm"
+                                 for g, v in cam.items()))
+        blocked = [g for g, v in cam.items() if v < 0.005]
+        if blocked:
+            print("    BLOCKED BY THE CAMERA: "
+                  + ", ".join(g.replace("R_", "") for g in blocked)
+                  + " -- the camera body is in the way of the grasp")
         print(f"    {len(reach)}/5 fingers start within 50mm of the apple"
               + ("" if len(reach) >= 4
                  else "  <-- the apple is not centred in the hand's closing arc"))

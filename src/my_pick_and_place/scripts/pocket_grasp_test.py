@@ -90,10 +90,21 @@ CLOSED_CENTROID_HAND_FRAME = _CLOSED_CENTROID_MEASURED + np.array([0.0, 0.0, PAL
 # having anywhere to put the apple, so this sweeps the trade-off with real grasps
 # rather than assuming which end matters more.
 CASES = [
-    (True, 0.3, -0.50),   # most table clearance, tightest grasp space
-    (True, 0.3, 0.0),
-    (True, 0.3, 0.50),    # most grasp space, least table clearance
-    (True, 0.0, 0.50),
+    # (palm_down, preshape, thumb_yaw, aim_depth)
+    #
+    # aim_depth is how far out along the fingers the apple is placed, in the hand's
+    # own frame. 0.128 (what we have been using) is the CLOSED FINGERTIP centroid --
+    # i.e. right at the very tips, where the fingers have the least leverage and
+    # cannot wrap. The palm face sits around 0.05-0.06. Placing the apple against the
+    # palm instead should let the fingers close over it rather than pinch at the ends.
+    #
+    # Worth testing rather than assuming: aiming too close to the palm previously
+    # caused the palm to knock the apple, which is why the aim was pushed out in the
+    # first place. The side approach may now make the closer aim viable.
+    (True, 0.3, 0.0, 0.060),   # against the palm
+    (True, 0.3, 0.0, 0.085),
+    (True, 0.3, 0.0, 0.110),
+    (True, 0.3, 0.0, 0.128),   # current: at the fingertips
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -235,7 +246,7 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, palm_down, preshape, thumb_yaw):
+def attempt(node, target_name, palm_down, preshape, thumb_yaw, aim_depth):
     label = "palm-DOWN" if palm_down else "free-roll (baseline)"
     print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
     rot = PALM_DOWN_ROTATION if palm_down else None
@@ -272,10 +283,10 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
     if rough is None:
         print("  rough solve UNREACHABLE")
         return {"preshape": preshape, "palm_down": palm_down,
-            "thumb_yaw": thumb_yaw, "ok": False}
+            "thumb_yaw": thumb_yaw, "aim_depth": aim_depth, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
-    offset_local = wrist_rot @ CLOSED_CENTROID_HAND_FRAME
+    offset_local = wrist_rot @ aim_point
     wrist_target = apple_local - offset_local
 
     print(f"  apple at local ({apple_local[0]:.3f}, {apple_local[1]:.3f}, {apple_local[2]:.3f})")
@@ -302,7 +313,7 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
     if approach is None or grasp is None:
         print("  UNREACHABLE")
         return {"preshape": preshape, "palm_down": palm_down,
-            "thumb_yaw": thumb_yaw, "ok": False}
+            "thumb_yaw": thumb_yaw, "aim_depth": aim_depth, "ok": False}
 
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
@@ -441,7 +452,8 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
                 lifted = None
 
     return {"preshape": preshape, "palm_down": palm_down,
-            "thumb_yaw": thumb_yaw, "ok": True, "contacts": n, "peak": peak,
+            "thumb_yaw": thumb_yaw, "aim_depth": aim_depth,
+            "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 
 
@@ -463,19 +475,20 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    results = [attempt(node, target_name, pd, ps, ty) for pd, ps, ty in CASES]
+    results = [attempt(node, target_name, pd, ps, ty, ad)
+               for pd, ps, ty, ad in CASES]
 
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            nm = f"ps={r['preshape']:.1f} yaw={r['thumb_yaw']:+.2f}"
+            nm = f"aim={r['aim_depth']:.3f}"
             print(f"{nm:>22} {'UNREACHABLE':>9}")
             continue
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = f"ps={r['preshape']:.1f} yaw={r['thumb_yaw']:+.2f}"
+        nm = f"aim={r['aim_depth']:.3f}"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

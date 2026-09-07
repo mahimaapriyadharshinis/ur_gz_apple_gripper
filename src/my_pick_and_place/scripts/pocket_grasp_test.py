@@ -110,6 +110,11 @@ APPROACH_BACKOFF = 0.16
 # Roughly the hand's own size -- further than this and it is not in the hand.
 HOLD_DISTANCE = 0.20
 
+# Fraction of the measured wrist error to correct per iteration. Full
+# correction overshoots and oscillates; damping it converges.
+CORRECTION_GAIN = 0.6
+CORRECTION_ITERS = 5
+
 
 def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):
     start = time.time()
@@ -135,9 +140,9 @@ def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05):
 # middle, so the finger is already driving hard into the apple by the time contact is
 # noticed, and it shoves it away. Smaller steps, checked more often, with a longer
 # command window so the joint tracks rather than lunges.
-CLOSE_STEP = 0.006
+CLOSE_STEP = 0.003
 CHECKS_PER_STEP = 5
-STEP_COMMAND_TIME = 0.20
+STEP_COMMAND_TIME = 0.30
 
 # The four fingers idle at 0.043-0.046Nm, so anything meaningfully above that is real
 # contact. The old 0.12Nm threshold sat far enough above the noise that a finger had
@@ -198,6 +203,12 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     while squeezed < SQUEEZE_EXTRA:
         squeezed += SQUEEZE_STEP
         for g in FINGER_GROUPS:
+            # Only fingers that actually touched something can be squeezed. Ones that
+            # found nothing were already driven to MAX_PITCH_CEILING while searching,
+            # so advancing them does nothing -- which is why the squeeze reported
+            # 0.04Nm (the idle reading) on every finger and looked like it had run.
+            if not contacted[g]:
+                continue
             _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
             if abs(eff or 0.0) < SQUEEZE_FORCE_CAP:
                 current[g] = min(current[g] + SQUEEZE_STEP, MAX_PITCH_CEILING)
@@ -211,7 +222,8 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
 
     holding = {g: abs(node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))[2] or 0.0)
                for g in FINGER_GROUPS}
-    print("  after squeeze, holding force: "
+    n_sq = sum(1 for g in FINGER_GROUPS if contacted[g])
+    print(f"  after squeeze ({n_sq}/5 fingers had contact to squeeze), holding force: "
           + ", ".join("%s=%.2f" % (g, holding[g]) for g in FINGER_GROUPS))
     return contacted, peak
 
@@ -312,14 +324,19 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw):
     # the fingers close beside it. Measuring the real error and re-solving for a
     # target offset by it converges to ~0.015m in the main pipeline.
     corrected = list(wrist_target)
-    for correction_i in range(3):
+    for correction_i in range(CORRECTION_ITERS):
         real_now = node.real_wrist_position()
         if real_now is None:
             break
         err_now = float(np.linalg.norm(np.array(real_now) - wrist_target))
         if err_now < 0.02:
             break
-        error_vec = wrist_target - np.array(real_now)
+        # Apply only part of the measured error. Feeding the FULL error back made the
+        # loop overshoot and bounce rather than settle -- measured sequences like
+        # 0.062 -> 0.034 -> 0.036 and 0.052 -> 0.052 -> 0.049 that never converge.
+        # That matters enormously here: grasps succeed at ~0.005m error (5/5 fingers)
+        # and fail completely at 0.024-0.049m (0/5), so the last 2cm decides everything.
+        error_vec = (wrist_target - np.array(real_now)) * CORRECTION_GAIN
         corrected = list(np.array(corrected) + error_vec)
         again = solve_ik(node.chain, corrected, target_rotation=rot)
         if again is None:

@@ -180,6 +180,30 @@ SQUEEZE_STEP = 0.006
 SQUEEZE_FORCE_CAP = 3.0
 
 
+def fingertip_gaps(node, apple_local, radius):
+    """Each fingertip's distance to the apple's SURFACE, in the robot frame.
+
+    Negative means the fingertip is already inside the apple's radius. This says
+    whether the apple is centred between the fingers or sitting off to one side --
+    which effort readings alone cannot distinguish from a weak grip.
+    """
+    if apple_local is None or radius is None:
+        return {}
+    out = {}
+    for g, link in FINGERTIP_LINK.items():
+        try:
+            t = node.tf_buffer.lookup_transform(
+                'base_footprint', link, rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.5))
+            p = t.transform.translation
+            d = float(np.linalg.norm(
+                np.array([p.x, p.y, p.z]) - np.asarray(apple_local)))
+            out[g] = d - radius
+        except Exception:
+            out[g] = None
+    return out
+
+
 def simulation_alive(node, timeout=10.0):
     """Is the sim publishing a robot state we can actually measure against?"""
     start = time.time()
@@ -448,6 +472,35 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw, aim_depth):
         print(f"  thumb tip is {thumb_clear * 1000:+.0f}mm above the table"
               + ("" if thumb_clear > 0.010
                  else "  <-- GROUNDED OUT: it is pushing the table, not the apple"))
+
+    # Did the thumb actually HOLD the yaw it was told to? In one attempt the commanded
+    # -0.50 behaved geometrically like 0.00 (implied protrusion 0.107 against 0.080 and
+    # 0.087 on the attempts that worked), which would mean the joint is being pushed off
+    # its command -- its effort cap is 1.5Nm like every other finger joint, so it can be
+    # back-driven by contact.
+    real_yaw = node.latest_joint_state.get('R_Thumb_Yaw', (None, None, None))[0]
+    if real_yaw is not None:
+        drift = abs(real_yaw - thumb_yaw)
+        print(f"  thumb yaw commanded {thumb_yaw:+.2f}, actually at {real_yaw:+.2f}"
+              + ("" if drift < 0.05 else f"  <-- OFF BY {drift:.2f} rad, being pushed back"))
+
+    # Which fingers are actually within reach of the apple BEFORE closing starts?
+    # The run that prompted this had 5/5 "contacts" and yet finished with index, middle
+    # and ring all reading 0.04-0.05Nm -- the idle noise floor, i.e. touching nothing.
+    # Only one finger per attempt was ever loaded. That is the signature of the apple
+    # sitting off to one side of the hand rather than in the middle of the closing arc,
+    # so measure each fingertip's own gap instead of trusting the centroid.
+    gaps = fingertip_gaps(node, apple_local,
+                          APPLE_RADIUS.get(target_name, 0.0555))
+    if gaps:
+        print("  fingertip gap to the apple surface before closing:")
+        print("    " + ", ".join(
+            f"{g.replace('R_', '')}={v * 1000:+.0f}mm" if v is not None else f"{g}=?"
+            for g, v in gaps.items()))
+        reach = [g for g, v in gaps.items() if v is not None and v < 0.05]
+        print(f"    {len(reach)}/5 fingers start within 50mm of the apple"
+              + ("" if len(reach) >= 4
+                 else "  <-- the apple is not centred in the hand's closing arc"))
 
     # Split the measurement: how far did the apple move during the DESCENT, before a
     # single finger moved? The fingers read 0.044Nm (baseline noise) while the apple

@@ -142,6 +142,11 @@ APPLE_RADIUS = {
 }
 TABLE_TOP_Z = 0.400
 
+# How many consecutive still readings the apple must give before an attempt may start.
+# Two was not enough: a bouncing apple is momentarily stationary at the top of each
+# bounce, so a single pair of samples taken there reads as settled.
+SETTLE_SAMPLES = 4
+
 
 # A tiny drop, not a centimetre. Placing the apple at EXACTLY resting height put its
 # surface in precise contact with the table, where any numerical overlap counted as
@@ -814,22 +819,39 @@ class FullLayerGraspNode(Node):
         target_z = apple_reset_z(target_name)
         for attempt_i in range(6):
             self.teleport_model(target_name, hx, hy, target_z, settle_sec=1.0)
-            first = self._apple_position_snapshot()
-            for _ in range(10):
-                rclpy.spin_once(self, timeout_sec=0.05)
-            second = self._apple_position_snapshot()
-            if first is None or second is None:
+            # Sample repeatedly, not twice. Comparing a single pair of snapshots lets a
+            # BOUNCING apple through: a ball is momentarily still at the top of each
+            # bounce, so two samples taken there read as settled. Measured directly --
+            # resets that logged 0.4m, 1.8m and even 32m of travel between samples still
+            # ended with "settled, drift 0.0020m", and the attempt then began against an
+            # apple that was flung 0.12-0.34m before a single finger moved. Requiring
+            # several consecutive still samples, and the apple actually near where it was
+            # put, cannot be fooled that way.
+            positions = []
+            for _ in range(SETTLE_SAMPLES):
+                for _ in range(10):
+                    rclpy.spin_once(self, timeout_sec=0.05)
+                snap = self._apple_position_snapshot()
+                if snap is None:
+                    break
+                positions.append(np.array(snap))
+            if len(positions) < SETTLE_SAMPLES:
                 continue
-            drift = float(np.linalg.norm(np.array(second) - np.array(first)))
-            if drift < 0.002:
+            drifts = [float(np.linalg.norm(positions[i + 1] - positions[i]))
+                      for i in range(len(positions) - 1)]
+            drift = max(drifts)
+            off_target = float(np.linalg.norm(
+                positions[-1] - np.array([hx, hy, target_z])))
+            if drift < 0.002 and off_target < 0.010:
                 if attempt_i:
                     self.get_logger().info(
                         f"[Apple reset] {target_name} settled after {attempt_i + 1} "
                         f"teleports (drift {drift:.4f}m)")
                 return True
             self.get_logger().warn(
-                f"[Apple reset] {target_name} still moving ({drift:.4f}m between "
-                f"samples) -- re-teleporting to stop it rolling.")
+                f"[Apple reset] {target_name} not settled (worst drift {drift:.4f}m "
+                f"across {SETTLE_SAMPLES} samples, {off_target:.4f}m off target) "
+                f"-- re-teleporting.")
             if attempt_i == 1:
                 # Two failed teleports means it is carrying real momentum that
                 # repositioning cannot remove. Recreate the body instead.

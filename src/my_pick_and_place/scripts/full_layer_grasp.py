@@ -467,10 +467,20 @@ def solve_ik(chain, target_xyz, init=None, target_rotation=None):
     # 0.079, 0.588), 0.124m from the requested target, and only a visual check caught
     # it. Report it instead.
     if target_rotation is not None and not valid_solutions:
+        # Say which test actually failed. This previously always blamed orientation,
+        # and printed "orientation NOT achievable ... best axis match 1.000" -- a
+        # perfect orientation match -- while the real problem was that the POSITION
+        # could not be reached. That sent us hunting the wrong thing.
         best_dot = max((dot for _, _, dot in results), default=float('nan'))
-        print(f"[solve_ik] requested orientation NOT achievable at {target_xyz}: "
-              f"best axis match {best_dot:.3f} (need > {ORIENTATION_DOT_MIN_LOOSE}). "
-              f"Refusing to silently return a differently-oriented solution.")
+        best_err = min((err for _, err, _ in results), default=float('nan'))
+        if best_dot <= ORIENTATION_DOT_MIN_LOOSE:
+            why = (f"orientation unreachable (best axis match {best_dot:.3f}, "
+                   f"need > {ORIENTATION_DOT_MIN_LOOSE})")
+        else:
+            why = (f"POSITION unreachable (best error {best_err:.3f}m, need < "
+                   f"{IK_FALLBACK_ERROR_CEILING}m); orientation was fine at "
+                   f"{best_dot:.3f}")
+        print(f"[solve_ik] cannot reach {target_xyz}: {why}")
         return None
 
     # ikpy has no concept of collisions -- joint limits here are +-2*pi (URDF), wide

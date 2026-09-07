@@ -103,30 +103,29 @@ PALM_TILT = np.radians(30.0)
 # 0.085 drove the palm into the apple; 0.120 gave the evenest fingertip spread.
 AIM_DEPTH = 0.120
 
-# Tilt and back-off were each swept alone, which could not find the combination that
-# matters. Sweeping tilt at a fixed 0.0634 back-off: 30deg was best, but 45deg and 60deg
-# put the fingertips 9-14mm INSIDE the apple before closing, so they failed on depth
-# rather than on angle. Sweeping back-off alone at 30deg only made things worse.
+# Tilt 45deg with 0.090 back-off is the best geometry found: it is the only setting
+# that has put a finger BELOW the apple's equator (ring at -12mm) with the pinky on it
+# at +2mm. 30deg gets more fingers but all of them 13-26mm above the equator, where
+# squeezing pushes the apple down and out; 60deg misses entirely.
 #
-# So pair them. The measured penetration at each tilt says how much back-off that tilt
-# needs to start the fingers ~15mm clear of the apple:
-#   45deg measured a mean gap of -11.5mm at 0.0634 -> needs about 0.090
-#   60deg measured a mean gap of  +2.0mm at 0.0634 -> needs about 0.076
+# What 45deg does not fix is that index and middle never touch the apple at all. They
+# start 14-16mm further from it than the pinky and peak at 0.023Nm -- below the 0.046Nm
+# free-air noise floor -- so they close past it into empty space. The apple is sitting
+# off to the ring/pinky side of the hand rather than in the middle of the four fingers,
+# which is the gap it keeps escaping through.
 #
-# This matters because contact height still is not low enough. At 30deg the fingers meet
-# the apple 13-18mm ABOVE its equator (pinky 24-26mm) while the thumb is 3-5mm below, so
-# after the squeeze all four fingers hold 0.04Nm and the thumb alone presses at 3.8-6.4Nm
-# -- it is shoving the apple out rather than trapping it. More tilt should bring the
-# fingers down onto the equator, if the depth is corrected at the same time.
-PALM_TILT = np.radians(30.0)
-PALM_OFFSET = 0.0634
+# The cause is in the aim itself. The across-the-hand target has always been the mean of
+# all FIVE fingertips, and the thumb sits well off to one side, so that mean is pulled
+# away from the four fingers' own centre line. This sweeps that offset.
+PALM_TILT = np.radians(45.0)
+PALM_OFFSET = 0.0900
 
 CASES = [
-    # (palm_tilt, preshape, thumb_yaw, palm_offset)
-    (np.radians(30.0), 0.3, -0.50, 0.0634),   # control: the known 5/5 configuration
-    (np.radians(45.0), 0.3, -0.50, 0.0900),
-    (np.radians(60.0), 0.3, -0.50, 0.0760),
-    (np.radians(45.0), 0.3, -0.50, 0.1000),
+    # (palm_tilt, preshape, lateral, palm_offset)
+    (PALM_TILT, 0.3,  0.000, PALM_OFFSET),   # control: the five-fingertip mean
+    (PALM_TILT, 0.3, -0.015, PALM_OFFSET),
+    (PALM_TILT, 0.3, +0.015, PALM_OFFSET),
+    (PALM_TILT, 0.3, +0.030, PALM_OFFSET),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -403,7 +402,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 if not contacted[g] and current[g] < limit:
                     current[g] = min(current[g] + CLOSE_STEP, limit)
                     moved = True
-            node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
+            node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                                  thumb_roll=THUMB_GRASP_ROLL)
             for _ in range(CHECKS_PER_STEP):
                 rclpy.spin_once(node, timeout_sec=0.08)
@@ -446,7 +445,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
             pushed += THUMB_PRELOAD_STEP
             current["R_Thumb"] = min(current["R_Thumb"] + THUMB_PRELOAD_STEP,
                                      MAX_PITCH_CEILING)
-            node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
+            node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                                  thumb_roll=THUMB_GRASP_ROLL)
             stop = False
             for _ in range(CHECKS_PER_STEP):
@@ -476,7 +475,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
             _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
             if abs(eff or 0.0) < SQUEEZE_FORCE_CAP:
                 current[g] = min(current[g] + SQUEEZE_STEP, MAX_PITCH_CEILING)
-        node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
+        node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                              thumb_roll=THUMB_GRASP_ROLL)
         for _ in range(CHECKS_PER_STEP):
             rclpy.spin_once(node, timeout_sec=0.08)
@@ -510,8 +509,9 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
-    label = f"palm tilted {np.degrees(palm_tilt):.0f}deg from flat"
+def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
+    label = (f"tilt {np.degrees(palm_tilt):.0f}deg, "
+             f"lateral {lateral * 1000:+.0f}mm")
     print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
     rot = tilted_palm_rotation(palm_tilt)
 
@@ -524,7 +524,7 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
         # other threw it 3.4m off the table. Neither measured anything about the grasp.
         print("  SKIPPED: the apple would not stop moving, so this attempt would "
               "measure nothing.")
-        return {"ok": False, "palm_offset": palm_offset, "palm_tilt": palm_tilt,
+        return {"ok": False, "palm_offset": palm_offset, "lateral": lateral, "palm_tilt": palm_tilt,
                 "unsettled": True}
     for _ in range(20):
         rclpy.spin_once(node, timeout_sec=0.1)
@@ -554,7 +554,7 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
     if rough is None:
         print("  rough solve UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "ok": False}
+            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
     # Where in the hand the apple should sit. The first two components stay as
@@ -567,8 +567,15 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
     # so the hand is already inside the fruit before the close begins and there is
     # nowhere left to travel. Backing the hand off along this axis gives the fingers
     # room to sweep in and actually wrap.
+    # The lateral term decides where the apple sits ACROSS the hand. It has always been
+    # _CLOSED_CENTROID_MEASURED[1], the mean of all FIVE fingertips -- but the thumb sits
+    # off to one side, so including it drags the aim off the four fingers' own centre.
+    # Measured consequence: index and middle start 14-16mm further from the apple than
+    # the pinky and peak at 0.023Nm, which is BELOW the 0.046Nm free-air noise. They
+    # never touch it. They sweep past beside it, which is the gap the apple escapes
+    # through.
     aim_point = np.array([palm_offset,
-                          _CLOSED_CENTROID_MEASURED[1],
+                          _CLOSED_CENTROID_MEASURED[1] + lateral,
                           AIM_DEPTH])
     offset_local = wrist_rot @ aim_point
     wrist_target = apple_local - offset_local
@@ -597,7 +604,7 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
     if approach is None or grasp is None:
         print("  UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "ok": False}
+            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
 
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
@@ -606,7 +613,7 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
     # apple has to enter.
     pre = {g: preshape for g in FINGER_GROUPS}
     pre["R_Thumb"] = 0.0
-    node.command_fingers(pre, 1.5, thumb_yaw=thumb_yaw, thumb_roll=THUMB_GRASP_ROLL)
+    node.command_fingers(pre, 1.5, thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
     settle(node, 6.0, joints=[f"{g}_Pitch" for g in FINGER_GROUPS], thresh=0.02)
     print(f"  approaching from ({approach_pos[0]:.3f}, {approach_pos[1]:.3f}, "
           f"{approach_pos[2]:.3f}) -- {APPROACH_BACKOFF:.2f}m back, then moving in "
@@ -655,7 +662,7 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
         print("  ABORT: cannot read the wrist position -- the TF tree is broken, which "
               "means the simulation has stopped publishing joint states.")
         print("  Restart the simulation (Terminal 1) before running this again.")
-        return {"ok": False, "palm_offset": palm_offset, "palm_tilt": palm_tilt,
+        return {"ok": False, "palm_offset": palm_offset, "lateral": lateral, "palm_tilt": palm_tilt,
                 "dead_sim": True}
     err = float(np.linalg.norm(np.array(real) - wrist_target))
     print(f"  wrist real ({real[0]:.3f}, {real[1]:.3f}, {real[2]:.3f}) err={err:.3f}m")
@@ -708,6 +715,12 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
         print("    " + ", ".join(
             f"{g.replace('R_', '')}={v * 1000:+.0f}mm" if v is not None else f"{g}=?"
             for g, v in gaps.items()))
+        four = [v for g, v in gaps.items() if g != "R_Thumb" and v is not None]
+        if len(four) == 4:
+            print(f"    spread across the four fingers: {(max(four) - min(four)) * 1000:.0f}mm"
+                  + ("  <-- even, the apple is centred"
+                     if (max(four) - min(four)) < 0.008
+                     else "  <-- uneven, the apple is off to one side"))
         reach = [g for g, v in gaps.items() if v is not None and v < 0.05]
         print(f"    {len(reach)}/5 fingers start within 50mm of the apple"
               + ("" if len(reach) >= 4
@@ -730,7 +743,7 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
 
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_local,
-        radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=thumb_yaw)
+        radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW)
     n = sum(contacted.values())
     print(f"  fingers contacted: {n}/5")
     print("  peak efforts: " + ", ".join("%s=%.3f" % (g, peak[g]) for g in FINGER_GROUPS))
@@ -790,7 +803,7 @@ def attempt(node, target_name, palm_tilt, preshape, thumb_yaw, palm_offset):
                 lifted = None
 
     return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset,
+            "thumb_yaw": thumb_yaw, "palm_offset": palm_offset, "lateral": lateral,
             "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 
@@ -830,8 +843,8 @@ def main():
         return
 
     results = []
-    for pt, ps, ty, po in CASES:
-        r = attempt(node, target_name, pt, ps, ty, po)
+    for pt, ps, lat, po in CASES:
+        r = attempt(node, target_name, pt, ps, lat, po)
         results.append(r)
         if r.get("dead_sim"):
             print()
@@ -842,8 +855,7 @@ def main():
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for r in results:
         if not r.get("ok"):
-            nm = (f"{np.degrees(r['palm_tilt']):.0f}deg/"
-                  f"{r['palm_offset']:.3f}m")
+            nm = f"lateral={r['lateral'] * 1000:+.0f}mm"
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
             print(f"{nm:>22} {why:>9}")
@@ -851,8 +863,7 @@ def main():
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = (f"{np.degrees(r['palm_tilt']):.0f}deg/"
-                  f"{r['palm_offset']:.3f}m")
+        nm = f"lateral={r['lateral'] * 1000:+.0f}mm"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

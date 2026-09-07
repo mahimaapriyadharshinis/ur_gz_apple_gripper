@@ -92,19 +92,14 @@ CLOSED_CENTROID_HAND_FRAME = _CLOSED_CENTROID_MEASURED + np.array([0.0, 0.0, PAL
 CASES = [
     # (palm_down, preshape, thumb_yaw, aim_depth)
     #
-    # aim_depth is how far out along the fingers the apple is placed, in the hand's
-    # own frame. 0.128 (what we have been using) is the CLOSED FINGERTIP centroid --
-    # i.e. right at the very tips, where the fingers have the least leverage and
-    # cannot wrap. The palm face sits around 0.05-0.06. Placing the apple against the
-    # palm instead should let the fingers close over it rather than pinch at the ends.
-    #
-    # Worth testing rather than assuming: aiming too close to the palm previously
-    # caused the palm to knock the apple, which is why the aim was pushed out in the
-    # first place. The side approach may now make the closer aim viable.
-    (True, 0.3, 0.0, 0.060),   # against the palm
-    (True, 0.3, 0.0, 0.085),
+    # aim_depth settled by measurement: aiming at the palm (0.060, 0.085) drove the
+    # PALM into the apple, knocking it 0.697m and 1.747m before a finger moved, while
+    # 0.110 kept it to 0.008m and got 3/5 contacts. So the apple sits partway out
+    # along the fingers, not against the palm and not right at the tips.
     (True, 0.3, 0.0, 0.110),
-    (True, 0.3, 0.0, 0.128),   # current: at the fingertips
+    (True, 0.3, 0.0, 0.110),
+    (True, 0.0, 0.0, 0.110),
+    (True, 0.0, 0.0, 0.120),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -174,50 +169,64 @@ SQUEEZE_FORCE_CAP = 3.0
 
 def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                       thumb_yaw=THUMB_GRASP_YAW):
+    """Close the four fingers first, then bring the thumb in last.
+
+    The thumb tip sits at hand-frame x=0.119 while the apple spans x=0.008 to 0.119 --
+    so with the thumb held part-closed through the approach it is already occupying
+    the space the apple needs, and it has nowhere to go when closing starts. Measured
+    repeatedly as the thumb taking 12-21Nm while every other finger read 0.04Nm.
+
+    Wrapping the fingers first and only then closing the thumb is how a hand actually
+    grasps: the fingers cage the object, and the thumb closes last to secure it.
+    """
     contacted = {g: False for g in FINGER_GROUPS}
     peak = {g: 0.0 for g in FINGER_GROUPS}
     current = {g: start_pitch for g in FINGER_GROUPS}
-    steps = int((MAX_PITCH_CEILING - start_pitch) / CLOSE_STEP) + 2
-    for _ in range(steps):
-        for g in FINGER_GROUPS:
-            if not contacted[g]:
-                current[g] = min(current[g] + CLOSE_STEP, MAX_PITCH_CEILING)
-        node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
-                             thumb_roll=THUMB_GRASP_ROLL)
-        for _ in range(CHECKS_PER_STEP):
-            rclpy.spin_once(node, timeout_sec=0.08)
-            for g in FINGER_GROUPS:
-                _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
-                eff = abs(eff or 0.0)
-                peak[g] = max(peak[g], eff)
-                if eff > CONTACT_THRESHOLD and not contacted[g]:
-                    # Force alone cannot tell the apple from the table -- a run with
-                    # fingers jammed in the tabletop reported 4/5 "contacts" at
-                    # saturated 100Nm while the apple never moved. Only count it if
-                    # this fingertip is actually at the apple.
-                    if apple_local is not None and radius is not None:
-                        if not node.fingertips_near_apple(apple_local, radius).get(g):
-                            continue
-                    contacted[g] = True
-                    # Hold this finger exactly where it is the moment it feels the
-                    # apple, so it stops pushing instead of driving on to its target.
-                    pos = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
-                    if pos is not None:
-                        current[g] = pos
-        if all(contacted.values()):
-            break
+    # Thumb held wide open while the fingers work.
+    current["R_Thumb"] = 0.0
 
-    # Squeeze phase: close past first contact so the fingers actually hold, easing in
-    # gradually and stopping each finger once it is pressing firmly, so this builds
-    # grip rather than punching the apple away.
+    def sample():
+        for g in FINGER_GROUPS:
+            _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
+            eff = abs(eff or 0.0)
+            peak[g] = max(peak[g], eff)
+            if eff > CONTACT_THRESHOLD and not contacted[g]:
+                if apple_local is not None and radius is not None:
+                    if not node.fingertips_near_apple(apple_local, radius).get(g):
+                        continue
+                contacted[g] = True
+                pos = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
+                if pos is not None:
+                    current[g] = pos
+
+    def drive(groups, limit):
+        steps = int((limit - start_pitch) / CLOSE_STEP) + 2
+        for _ in range(steps):
+            moved = False
+            for g in groups:
+                if not contacted[g] and current[g] < limit:
+                    current[g] = min(current[g] + CLOSE_STEP, limit)
+                    moved = True
+            node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=thumb_yaw,
+                                 thumb_roll=THUMB_GRASP_ROLL)
+            for _ in range(CHECKS_PER_STEP):
+                rclpy.spin_once(node, timeout_sec=0.08)
+                sample()
+            if not moved or all(contacted[g] for g in groups):
+                break
+
+    fingers = [g for g in FINGER_GROUPS if g != "R_Thumb"]
+    print("  closing the four fingers (thumb held open)...")
+    drive(fingers, MAX_PITCH_CEILING)
+    print("  fingers wrapped: %d/4 -- now bringing the thumb in"
+          % sum(1 for g in fingers if contacted[g]))
+    drive(["R_Thumb"], MAX_PITCH_CEILING)
+
+    # Squeeze phase: close past first contact so the fingers actually hold.
     squeezed = 0.0
     while squeezed < SQUEEZE_EXTRA:
         squeezed += SQUEEZE_STEP
         for g in FINGER_GROUPS:
-            # Only fingers that actually touched something can be squeezed. Ones that
-            # found nothing were already driven to MAX_PITCH_CEILING while searching,
-            # so advancing them does nothing -- which is why the squeeze reported
-            # 0.04Nm (the idle reading) on every finger and looked like it had run.
             if not contacted[g]:
                 continue
             _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
@@ -325,8 +334,11 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw, aim_depth):
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
     # out on the table first.
-    node.command_fingers({g: preshape for g in FINGER_GROUPS}, 1.5,
-                         thumb_yaw=thumb_yaw, thumb_roll=THUMB_GRASP_ROLL)
+    # Thumb stays fully open during the approach so it is not occupying the space the
+    # apple has to enter.
+    pre = {g: preshape for g in FINGER_GROUPS}
+    pre["R_Thumb"] = 0.0
+    node.command_fingers(pre, 1.5, thumb_yaw=thumb_yaw, thumb_roll=THUMB_GRASP_ROLL)
     settle(node, 6.0, joints=[f"{g}_Pitch" for g in FINGER_GROUPS], thresh=0.02)
     print(f"  approaching from ({approach_pos[0]:.3f}, {approach_pos[1]:.3f}, "
           f"{approach_pos[2]:.3f}) -- {APPROACH_BACKOFF:.2f}m back, then moving in "

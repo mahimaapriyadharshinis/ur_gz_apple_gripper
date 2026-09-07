@@ -144,11 +144,17 @@ SQUEEZE = 0.12
 PRESHAPE = 0.4
 
 CASES = [
-    # (palm_tilt, preshape, lateral, squeeze_extra)
-    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
-    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
-    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
-    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
+    # (palm_tilt, preshape, lateral, palm_offset)
+    #
+    # 0.090 is the back-off that produced the pick. Repeating it four times gave four
+    # failures, because the arm landed the wrist 4-6mm lower those times and that is
+    # enough to bury the fingertips in the apple before closing starts. The tolerance
+    # above now demands 8mm instead of 20mm, and these also probe a few mm more
+    # clearance in case the arm cannot hold the tighter figure under its own weight.
+    (PALM_TILT, PRESHAPE, LATERAL, 0.090),   # the configuration that picked the apple up
+    (PALM_TILT, PRESHAPE, LATERAL, 0.096),
+    (PALM_TILT, PRESHAPE, LATERAL, 0.102),
+    (PALM_TILT, PRESHAPE, LATERAL, 0.090),   # repeat, to see how much it varies
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -167,6 +173,15 @@ HOLD_DISTANCE = 0.20
 
 # Fraction of the measured wrist error to correct per iteration. Full
 # correction overshoots and oscillates; damping it converges.
+# How close the wrist has to get before the grasp starts. This was 0.020m, which is
+# four times larger than the difference between the one attempt that picked the apple up
+# and four identical attempts that failed. Those four landed the wrist 4-6mm lower, which
+# flipped index, middle and ring from just OUTSIDE the apple (+3 to +6mm) to just INSIDE
+# it (-3 to 0mm) -- and a finger that starts inside the fruit cannot wrap around it, only
+# shove it. The apple moved 0.110-0.211m during closing in those attempts against 0.029m
+# in the success. A 20mm tolerance on a grasp decided by 6mm was never good enough.
+WRIST_TOLERANCE = 0.008
+
 CORRECTION_GAIN = 0.6
 # Attempt 1 of the thumb-last run converged 0.233 -> 0.150 -> 0.113 -> 0.075 -> 0.058
 # and then simply ran out of iterations, starting the grasp with the arm still 0.031m
@@ -599,8 +614,8 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
-    label = (f"squeeze {squeeze_extra:.2f} rad, "
+def attempt(node, target_name, palm_tilt, preshape, lateral, palm_offset):
+    label = (f"back-off {palm_offset:.3f}m, "
              f"preshape {preshape:.1f}")
     print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
     rot = tilted_palm_rotation(palm_tilt)
@@ -614,7 +629,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
         # other threw it 3.4m off the table. Neither measured anything about the grasp.
         print("  SKIPPED: the apple would not stop moving, so this attempt would "
               "measure nothing.")
-        return {"ok": False, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "palm_tilt": palm_tilt,
+        return {"ok": False, "palm_offset": palm_offset, "lateral": lateral, "palm_tilt": palm_tilt,
                 "unsettled": True}
     for _ in range(20):
         rclpy.spin_once(node, timeout_sec=0.1)
@@ -644,7 +659,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
     if rough is None:
         print("  rough solve UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "ok": False}
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
     wrist_rot = hand_fk(node.chain, rough[1])[:3, :3]
 
     # Where in the hand the apple should sit. The first two components stay as
@@ -664,7 +679,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
     # the pinky and peak at 0.023Nm, which is BELOW the 0.046Nm free-air noise. They
     # never touch it. They sweep past beside it, which is the gap the apple escapes
     # through.
-    aim_point = np.array([PALM_OFFSET,
+    aim_point = np.array([palm_offset,
                           _CLOSED_CENTROID_MEASURED[1] + lateral,
                           AIM_DEPTH])
     offset_local = wrist_rot @ aim_point
@@ -694,7 +709,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
     if approach is None or grasp is None:
         print("  UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "ok": False}
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral, "ok": False}
 
     # Pre-shape BEFORE descending, so the fingertips are retracted on the way down and
     # the wrist can actually reach the pocket height instead of the fingers grounding
@@ -724,7 +739,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
         if real_now is None:
             break
         err_now = float(np.linalg.norm(np.array(real_now) - wrist_target))
-        if err_now < 0.02:
+        if err_now < WRIST_TOLERANCE:
             break
         # Apply only part of the measured error. Feeding the FULL error back made the
         # loop overshoot and bounce rather than settle -- measured sequences like
@@ -752,7 +767,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
         print("  ABORT: cannot read the wrist position -- the TF tree is broken, which "
               "means the simulation has stopped publishing joint states.")
         print("  Restart the simulation (Terminal 1) before running this again.")
-        return {"ok": False, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra, "palm_tilt": palm_tilt,
+        return {"ok": False, "palm_offset": palm_offset, "lateral": lateral, "palm_tilt": palm_tilt,
                 "dead_sim": True}
     err = float(np.linalg.norm(np.array(real) - wrist_target))
     print(f"  wrist real ({real[0]:.3f}, {real[1]:.3f}, {real[2]:.3f}) err={err:.3f}m")
@@ -904,7 +919,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, squeeze_extra):
                 lifted = None
 
     return {"preshape": preshape, "palm_tilt": palm_tilt,
-            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": PALM_OFFSET, "lateral": lateral, "squeeze_extra": squeeze_extra,
+            "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset, "lateral": lateral,
             "ok": True, "contacts": n, "peak": peak,
             "moved": moved, "lifted": lifted}
 
@@ -944,8 +959,8 @@ def main():
         return
 
     results = []
-    for pt, ps, lat, sq in CASES:
-        r = attempt(node, target_name, pt, ps, lat, sq)
+    for pt, ps, lat, po in CASES:
+        r = attempt(node, target_name, pt, ps, lat, po)
         results.append(r)
         if r.get("dead_sim"):
             print()
@@ -956,7 +971,7 @@ def main():
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for i, r in enumerate(results):
         if not r.get("ok"):
-            nm = f"repeat {i + 1}"
+            nm = f"back-off={r['palm_offset']:.3f}m"
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
             print(f"{nm:>22} {why:>9}")
@@ -964,7 +979,7 @@ def main():
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = f"repeat {i + 1}"
+        nm = f"back-off={r['palm_offset']:.3f}m"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

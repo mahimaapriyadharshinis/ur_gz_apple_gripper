@@ -120,24 +120,35 @@ PALM_TILT = np.radians(45.0)
 PALM_OFFSET = 0.0900
 LATERAL = 0.015
 
+# THE FIRST COMPLETE GRASP IN THIS PROJECT, and the configuration that produced it.
+#
+#   palm tilt 45deg, back-off 0.090, lateral +15mm, pre-shape 0.40, squeeze 0.12
+#   -> 5/5 fingers, contacts at index -16mm, middle -19mm, ring -9mm, pinky -5mm and
+#      thumb +14mm, so FOUR of five below the apple's equator with the thumb over the
+#      top. Apple moved 0.044m in total and then rose 0.085m through the lift and
+#      stayed 0.123m from the wrist: HELD.
+#
+# Every false-success guard added over the past week had to pass for that verdict --
+# height above half the commanded lift, apple still within a hand-width of the wrist,
+# both compared in the same coordinate frame, contacts confirmed by fingertip TF
+# position rather than effort alone, and the apple settled before the attempt began.
+#
+# The squeeze theory that motivated the last sweep was wrong, and wrong in the opposite
+# direction: squeezing moved the apple only 0.001-0.010m at every setting, and MORE
+# squeeze gave monotonically more contacts, a deeper wrap and the lift. 0.00 got 0/5,
+# 0.02 got 1/5, 0.05 got 3/5, 0.12 got 5/5 and the pick.
+#
+# One success out of four attempts is not yet a reliable grasp. These four cases are
+# identical so the next run measures how often it actually works.
+SQUEEZE = 0.12
+PRESHAPE = 0.4
+
 CASES = [
     # (palm_tilt, preshape, lateral, squeeze_extra)
-    #
-    # The squeeze is now the variable, because it is the phase that loses the apple.
-    # Every attempt that reaches the fruit shows the same sequence: fingers hit 1.500Nm,
-    # the joint cap and unambiguous hard contact, then the squeeze runs and they finish
-    # at 0.00-0.02Nm holding nothing, with the apple 4.7-5.1cm further away. It was added
-    # to stop fingers merely touching, but each finger contacts at a different moment and
-    # then drives 0.12 rad further on its own, so the first one there shoves the apple
-    # away from the rest.
-    #
-    # preshape 0.4 is fixed: it produced the best contact geometry yet measured, 3 of 4
-    # fingers BELOW the apple's equator (middle -19mm, ring -10mm, pinky -7mm) with the
-    # thumb above at +12mm -- fingers under the widest point, thumb over it.
-    (PALM_TILT, 0.4, LATERAL, 0.00),   # no squeeze at all
-    (PALM_TILT, 0.4, LATERAL, 0.02),
-    (PALM_TILT, 0.4, LATERAL, 0.05),
-    (PALM_TILT, 0.4, LATERAL, 0.12),   # control: what every run so far has used
+    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
+    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
+    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
+    (PALM_TILT, PRESHAPE, LATERAL, SQUEEZE),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -217,7 +228,7 @@ CONTACT_THRESHOLD_BY_FINGER = {}
 # detection threshold, i.e. resting on the apple rather than holding it. The apple
 # then simply stayed behind when the arm lifted. A real hold needs the fingers to
 # keep closing past first contact until they are pressing.
-SQUEEZE_EXTRA = 0.12
+SQUEEZE_EXTRA = 0.12  # see CASES: more squeeze measured strictly better, not worse
 SQUEEZE_STEP = 0.006
 SQUEEZE_FORCE_CAP = 3.0
 
@@ -943,9 +954,9 @@ def main():
 
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
-    for r in results:
+    for i, r in enumerate(results):
         if not r.get("ok"):
-            nm = f"squeeze={r['squeeze_extra']:.2f}"
+            nm = f"repeat {i + 1}"
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
             print(f"{nm:>22} {why:>9}")
@@ -953,7 +964,7 @@ def main():
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = f"squeeze={r['squeeze_extra']:.2f}"
+        nm = f"repeat {i + 1}"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

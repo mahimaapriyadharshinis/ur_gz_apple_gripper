@@ -93,21 +93,19 @@ CLOSED_CENTROID_HAND_FRAME = _CLOSED_CENTROID_MEASURED + np.array([0.0, 0.0, PAL
 CASES = [
     # (palm_down, preshape, thumb_yaw, aim_depth)
     #
-    # aim_depth settled by measurement: aiming at the palm (0.060, 0.085) drove the
-    # PALM into the apple, knocking it 0.697m and 1.747m before a finger moved, while
-    # 0.110 kept it to 0.008m. So the apple sits partway out along the fingers.
+    # aim_depth: 0.060 and 0.085 drove the PALM into the apple (0.697m and 1.747m of
+    # damage before a finger moved). Of the workable depths, 0.120 gave the evenest
+    # fingertip spread yet measured -- all five within 14-18mm of the apple, a 4mm
+    # spread, against 5-12mm at 0.110 -- so it leads here, with 0.110 kept as a check.
     #
-    # thumb_yaw back to -0.50, and this time for a measured reason. With yaw=0 the
-    # thumb protrudes 0.1190m below the palm; with the wrist at 0.521 and the palm
-    # facing down that puts the thumb tip at 0.402 against a table top of 0.400 -- it
-    # is driven INTO the table, which is why it read 18.4/69.8/16.5Nm while every
-    # other finger sat at its 1.50 cap. yaw=-0.50 protrudes 0.0946m instead, putting
-    # the tip at 0.426 (26mm of clearance), and still leaves a 0.135m thumb-to-finger
-    # gap against a 0.111m apple. One case keeps yaw=0.0 as a control.
-    (True, 0.3, -0.50, 0.110),
-    (True, 0.3, -0.50, 0.110),
-    (True, 0.3,  0.00, 0.110),
+    # thumb_yaw -0.50 keeps the thumb off the table: measured protrusion 0.080-0.087m
+    # against 0.106m at yaw 0.00, which is the difference between 26mm of clearance and
+    # 2mm. The joint can be pushed off this command by contact, so the run now reports
+    # the yaw it actually held.
     (True, 0.3, -0.50, 0.120),
+    (True, 0.3, -0.50, 0.120),
+    (True, 0.3, -0.50, 0.110),
+    (True, 0.0, -0.50, 0.120),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -274,11 +272,27 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 break
 
     fingers = [g for g in FINGER_GROUPS if g != "R_Thumb"]
-    print("  closing the four fingers (thumb held open)...")
-    drive(fingers, MAX_PITCH_CEILING)
-    print("  fingers wrapped: %d/4 -- now bringing the thumb in"
-          % sum(1 for g in fingers if contacted[g]))
+
+    # The thumb comes in FIRST, but only after the approach is over -- it stays wide
+    # open while the arm moves in, then closes just far enough to touch.
+    #
+    # Closing it LAST was measured to be too late. The four fingers are side by side,
+    # so they all push the apple the same way: with nothing opposing them the apple is
+    # shoved out of the hand before the thumb ever arrives. Attempt 4 of the previous
+    # run showed it exactly -- fingers pressing at 1.5, 1.5 and 3.1Nm, the apple sliding
+    # 0.021m, and every finger finishing at 0.04Nm, the idle noise floor, holding air.
+    # The only attempt that lifted the apple at all was the one where the thumb happened
+    # to be jammed into it at 11.5Nm, which is a wedge, not a grasp.
+    #
+    # Closing the thumb to first contact before the fingers move gives them something to
+    # close against. drive() stops a finger the moment it feels the apple, so this is a
+    # light backstop, not a squeeze.
+    print("  thumb closing to first contact, to give the fingers a backstop...")
     drive(["R_Thumb"], MAX_PITCH_CEILING)
+    print("  thumb %s -- now closing the four fingers against it"
+          % ("in contact" if contacted["R_Thumb"] else "found nothing"))
+    drive(fingers, MAX_PITCH_CEILING)
+    print("  fingers wrapped: %d/4" % sum(1 for g in fingers if contacted[g]))
 
     # Squeeze phase: close past first contact so the fingers actually hold.
     squeezed = 0.0
@@ -321,7 +335,13 @@ def attempt(node, target_name, palm_down, preshape, thumb_yaw, aim_depth):
     wx, wy = APPLE_HOME_WORLD_XY[target_name]
     node.robot_x, node.robot_y, node.robot_yaw = wx, DELIVERY_ROBOT_Y, DELIVERY_ROBOT_YAW
     node.reset_everything()
-    node.reset_target_apple_position(target_name)
+    if not node.reset_target_apple_position(target_name):
+        # Two attempts in one run began against a still-flying apple: one ended with the
+        # arm unable to reach it at all (fingertips 495mm away, IK error 0.338m) and the
+        # other threw it 3.4m off the table. Neither measured anything about the grasp.
+        print("  SKIPPED: the apple would not stop moving, so this attempt would "
+              "measure nothing.")
+        return {"ok": False, "aim_depth": aim_depth, "unsettled": True}
     for _ in range(20):
         rclpy.spin_once(node, timeout_sec=0.1)
     before = apple_xyz(node)
@@ -627,7 +647,9 @@ def main():
     for r in results:
         if not r.get("ok"):
             nm = f"aim={r['aim_depth']:.3f}"
-            print(f"{nm:>22} {'UNREACHABLE':>9}")
+            why = ("SKIPPED" if r.get("unsettled")
+                   else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
+            print(f"{nm:>22} {why:>9}")
             continue
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"

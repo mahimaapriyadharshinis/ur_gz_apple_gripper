@@ -803,7 +803,7 @@ class FullLayerGraspNode(Node):
         if target_name not in APPLE_HOME_WORLD_XY:
             self.get_logger().warn(
                 f"[Apple reset] No known spawn position for {target_name} -- skipping reset.")
-            return
+            return False
         hx, hy = APPLE_HOME_WORLD_XY[target_name]
         # Teleporting sets the apple's POSITION but not its VELOCITY, so an apple that
         # was already rolling keeps rolling straight through the reset -- and a sphere
@@ -826,7 +826,7 @@ class FullLayerGraspNode(Node):
                     self.get_logger().info(
                         f"[Apple reset] {target_name} settled after {attempt_i + 1} "
                         f"teleports (drift {drift:.4f}m)")
-                return
+                return True
             self.get_logger().warn(
                 f"[Apple reset] {target_name} still moving ({drift:.4f}m between "
                 f"samples) -- re-teleporting to stop it rolling.")
@@ -837,8 +837,13 @@ class FullLayerGraspNode(Node):
                     f"[Apple reset] {target_name} keeps its velocity through teleports "
                     f"-- respawning it to reset the body entirely.")
                 self.respawn_model(target_name, hx, hy, target_z)
-        self.get_logger().warn(
-            f"[Apple reset] {target_name} would not settle; proceeding anyway.")
+        # Do NOT proceed. An attempt begun against a still-moving apple measures
+        # nothing: two such attempts in one run ended with the arm unable to reach
+        # (fingertips 495mm from the apple) and with the apple thrown 3.4m off the
+        # table. Report the failure so the caller can skip the attempt.
+        self.get_logger().error(
+            f"[Apple reset] {target_name} would not settle after 6 tries.")
+        return False
 
     def _apple_position_snapshot(self):
         if self.target_pose is None:

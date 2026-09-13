@@ -158,14 +158,16 @@ LAST_FINGER_CMD = {}
 CASES = [
     # (tilt, preshape, lateral, method, lowered, thumb cap, empty control, ease thumb before lift)
     #
-    # The empty-hand controls answered their question: from the same pose the arm lifted
-    # the empty hand 15.0 and 15.7cm with wrist_1 at 7Nm, while both grasps drove wrist_1 to
-    # its 28Nm limit. So holding the apple is what loads the wrist, by far more than the
-    # apple weighs. This tests whether the thumb's squeeze is the source: half the grasps
-    # ease the thumb to 3Nm before lifting. Alternated.
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, True),
+    # Easing the thumb before the lift did not relieve wrist_1: in the attempt where it
+    # was eased from 13.6Nm to 1.5Nm, the thumb load was back to 6-8Nm within 3s of the
+    # lift starting and wrist_1 still reached its 28Nm limit (the apple's weight pushes
+    # back on the thumb). The pick rate was the same either way. Dropped.
+    #
+    # Four identical grasps, watched until the arm really stops, with simulated time and
+    # wrist_1 logged, to find out whether the "stalls" were stalls at all.
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
 ]
 
@@ -360,8 +362,14 @@ LIFT_SAMPLE_S = 0.2
 # yet in all four attempts the hand had risen only 12-19mm after 6s, and the apple had
 # kept pace with it throughout. Whatever loses the apple happens after that. Watch until
 # the hand has stopped rising, up to this long.
-LIFT_WATCH_S = 25.0
-LIFT_STILL_S = 2.0          # hand counted as stopped after rising <2mm over this long
+#
+# 60s and 8s, not 25s and 2s. In the thumb-ease run the hand rose in steps with pauses of
+# about 2s between them (attempt 3: held at 18mm from 6.4-7.4s and at 20mm from 8.4-9.4s,
+# then kept rising), so a 2s pause ended the watch on an arm that had not stopped: attempt
+# 2 was cut off at 15mm and attempt 3 at 65mm, and both were scored as stalls. Attempt 4
+# was still rising at 5mm/s when the 25s limit ended its watch at 102mm.
+LIFT_WATCH_S = 60.0
+LIFT_STILL_S = 8.0          # hand counted as stopped after rising <2mm over this long
 # 15mm, not 5mm. As the lift starts the apple settles a few millimetres down into the
 # cradle of the fingers and then rises with the hand at that offset: the one picked apple
 # in the last run sat a steady 6mm behind the hand from 1.4s to 25s and rose 11.3cm. At 5mm
@@ -1472,6 +1480,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         slip_at = None
         arm_peak = {jn: 0.0 for jn in ARM_JOINTS}
         t_start = time.time()
+        sim_start = getattr(node, "joint_stamp", None)
         last_rise_t, last_rise_h = t_start, 0.0
         while time.time() - t_start < LIFT_WATCH_S and w0 is not None and a0 is not None:
             for _ in range(2):
@@ -1491,8 +1500,11 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
                 eff = abs(node.latest_joint_state.get(jn, (0, 0, 0))[2] or 0.0)
                 arm_peak[jn] = max(arm_peak[jn], eff)
             lift_eff = abs(node.latest_joint_state.get('shoulder_lift_joint', (0, 0, 0))[2] or 0.0)
+            w1_eff = abs(node.latest_joint_state.get('wrist_1_joint', (0, 0, 0))[2] or 0.0)
+            sim_now = getattr(node, "joint_stamp", None)
+            sim_t = (sim_now - sim_start) if (sim_now is not None and sim_start is not None) else None
             trace.append((now_t - t_start, hand_rise, apple_rise, lagging,
-                          n_loaded, loads["R_Thumb"], lift_eff))
+                          n_loaded, loads["R_Thumb"], lift_eff, w1_eff, sim_t))
             if slip_at is None and lagging > SLIP_MM:
                 slip_at = (hand_rise, n_loaded, loads["R_Thumb"], now_t - t_start)
             if hand_rise - last_rise_h > 2.0:
@@ -1501,20 +1513,29 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
                 break
         settle(node, 5.0)
         if trace:
-            print("    time   hand up  apple up  apple behind  fingers loaded   thumb  shoulder")
+            print("    time  sim time   hand up  apple up  apple behind  fingers loaded   thumb  "
+                  "shoulder  wrist_1")
             shown = -1.0
             for row in trace:
-                if row[0] - shown >= 1.0 or row is trace[-1]:
-                    t_, h_, a_, lag_, nl_, th_, se_ = row
-                    print(f"    {t_:4.1f}s  {h_:+6.0f}mm  {a_:+6.0f}mm  {lag_:+8.0f}mm  "
-                          f"{nl_:>10}/4  {th_:5.2f}Nm  {se_:5.0f}Nm")
+                if row[0] - shown >= 2.0 or row is trace[-1]:
+                    t_, h_, a_, lag_, nl_, th_, se_, w1_, st_ = row
+                    st_txt = "-" if st_ is None else f"{st_:.1f}s"
+                    print(f"    {t_:4.1f}s  {st_txt:>8}  {h_:+6.0f}mm  {a_:+6.0f}mm  {lag_:+8.0f}mm  "
+                          f"{nl_:>10}/4  {th_:5.2f}Nm  {se_:5.0f}Nm  {w1_:5.1f}Nm")
                     shown = t_
             final = trace[-1]
             REC["hand_rise"] = final[1] / 1000.0
             REC["lift_time"] = final[0]
             REC["final_lag"] = final[3] / 1000.0
+            REC["lift_sim_time"] = final[8]
+            # How much of the lift wrist_1 spent pinned at its limit: a brief spike and a
+            # joint held at its limit throughout are different problems.
+            REC["wrist1_pinned"] = (sum(1 for row in trace if row[7] >= 0.98 * 28.0)
+                                    / float(len(trace)))
+            sim_txt = "" if final[8] is None else f" ({final[8]:.1f}s of simulated time)"
             print(f"  hand rose {final[1]:.0f}mm of the commanded {LIFT_HEIGHT * 1000:.0f}mm "
-                  f"in {final[0]:.1f}s (commanded to take 3.0s)")
+                  f"in {final[0]:.1f}s{sim_txt}, commanded to take 3.0s; wrist_1 at its limit "
+                  f"in {REC['wrist1_pinned'] * 100:.0f}% of samples")
         saturated = [jn for jn in ARM_JOINTS
                      if arm_peak[jn] >= 0.98 * ARM_EFFORT_LIMIT[jn]]
         REC["shoulder_peak"] = arm_peak['shoulder_lift_joint']
@@ -1709,6 +1730,8 @@ def main():
           f"{THUMB_PRELOAD_FORCE:.1f}Nm")
     print(f"  hand rose / took -- how far the hand actually rose, and how long it took "
           f"(commanded: {LIFT_HEIGHT * 100:.0f}cm in 3.0s)")
+    print("  sim time         -- how long the lift took in simulated time (wall time is longer "
+          "when Gazebo runs slower than real time)")
     print("  shoulder/wrist_1 -- peak effort on those arm joints during the lift "
           "(limits 150Nm and 28Nm)")
     print("  ARM STALLED      -- the apple stayed in the hand, but the arm stopped lifting")
@@ -1750,9 +1773,12 @@ def main():
         if rec.get("lift") is None or rec.get("empty"):
             continue
         hr, lt, sl = rec.get("hand_rise"), rec.get("lift_time"), rec.get("slip_at")
+        st, pin = rec.get("lift_sim_time"), rec.get("wrist1_pinned")
         print(f"    apple rose {rec['lift'] * 100:+.1f}cm: hand rose "
               f"{'-' if hr is None else f'{hr * 100:.1f}cm'} in "
-              f"{'-' if lt is None else f'{lt:.1f}s'}, shoulder peak "
+              f"{'-' if lt is None else f'{lt:.1f}s'}"
+              f"{'' if st is None else f' ({st:.1f}s simulated)'}, wrist_1 at limit "
+              f"{'-' if pin is None else f'{pin * 100:.0f}%'} of the lift, shoulder peak "
               f"{rec.get('shoulder_peak', 0):.0f}Nm"
               f"{' (saturated: ' + rec['arm_saturated'] + ')' if rec.get('arm_saturated') else ''}, "
               f"slipped {'never' if sl is None else f'after {sl * 100:.1f}cm of hand rise'}")

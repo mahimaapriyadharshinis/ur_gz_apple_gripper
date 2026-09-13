@@ -703,6 +703,9 @@ class FullLayerGraspNode(Node):
         self.target_pose = msg
 
     def _joint_cb(self, msg):
+        # Simulation time of this sample. Wall-clock time overstates how long the arm takes
+        # whenever Gazebo runs slower than real time.
+        self.joint_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         for name, pos, vel, eff in zip(msg.name, msg.position, msg.velocity, msg.effort):
             self.latest_joint_state[name] = (pos, vel, eff)
 

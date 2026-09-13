@@ -150,19 +150,16 @@ THUMB_ROLL = THUMB_GRASP_ROLL
 CASES = [
     # (palm_tilt, preshape, lateral, thumb_roll)
     #
-    # Everything that produced the pick is held fixed -- tilt 45deg, back-off 0.090,
-    # lateral +15mm, pre-shape 0.4, squeeze 0.12 -- and every case now corrects the wrist
-    # clear of the apple and moves in along a straight line.
-    #
-    # Thumb roll is the variable. The thumb keeps meeting the apple 20-34mm ABOVE its
-    # equator while the fingers are below it, so thumb and fingers are not directly
-    # across the apple from each other and the fruit is squeezed out through the gap
-    # between them. R_Thumb_Roll has never been moved from 0.0; the opposition angle now
-    # reported after closing says directly which setting closes that gap.
-    (PALM_TILT, PRESHAPE, LATERAL, 0.00),   # control
-    (PALM_TILT, PRESHAPE, LATERAL, -0.30),
-    (PALM_TILT, PRESHAPE, LATERAL, +0.30),
-    (PALM_TILT, PRESHAPE, LATERAL, 0.00),   # repeat of the control
+    # Four identical attempts at the configuration that produced the pick -- tilt 45deg,
+    # back-off 0.090, lateral +15mm, pre-shape 0.4, squeeze 0.12, thumb roll 0.0 -- now
+    # with an approach that refuses to go near the apple unless the hand is measurably in
+    # place. The thumb-roll sweep is paused: no attempt in the last run reached the apple
+    # in position, so it told us nothing about the thumb, and varying it now would only
+    # hide whether the approach itself is fixed.
+    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
+    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
+    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
+    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -175,22 +172,37 @@ LIFT_HEIGHT = 0.15
 # beside the apple rather than being lowered through it.
 APPROACH_BACKOFF = 0.16
 
-# Where the wrist correction runs: this far back along the hand's forward axis from the
-# grasp pose, so no correction move happens next to the apple. The fingertips start
-# 4-11mm from the apple at the grasp pose, so 40mm back leaves them well clear.
-PREGRASP_STANDOFF = 0.040
+# Where the wrist correction runs: this far back from the grasp pose along the hand's
+# forward axis. It was 40mm, on the assumption that was "clear of the apple". It was not.
+# The first move to this pose lands 58-78mm off target (78, 68, 58, 61mm in one run;
+# 65-118mm in earlier ones) -- solve_ik accepts answers up to 25mm off and the arm sags on
+# top -- so 40mm of clearance was smaller than the error being corrected. 120mm is larger
+# than the worst first-move error ever logged, so nothing done here can reach the apple.
+PREGRASP_STANDOFF = 0.120
 
-# How many straight-line steps to cover that last stretch in.
-APPROACH_STEPS = 4
+# The final approach covers PREGRASP_STANDOFF in steps this many, i.e. 10mm each, with the
+# real wrist position checked after every one.
+APPROACH_STEPS = 12
 
-# Largest single-joint change allowed for a SMALL move (a correction, a straight-line
-# step, the lift). A few centimetres of wrist travel needs a few hundredths of a radian;
-# anything past this is IK switching to a different arm configuration, and driving
-# there swings the whole hand through space.
-FINE_MOVE_MAX_JUMP = 0.35
+# The hand is not allowed to start towards the apple until its MEASURED position at the
+# pre-grasp pose is this close. In the run that prompted this, every attempt drove in
+# while still 58-78mm out of place, and every knock happened during that drive.
+APPROACH_GATE = 0.012
 
-# The approach-to-pre-grasp move covers ~12cm, so it legitimately needs more -- but a
-# configuration flip is typically well over a radian on some joint.
+# During the final approach, the most the real wrist may stray from the straight line
+# before the approach is abandoned rather than continued into the apple.
+TRACK_LIMIT = 0.015
+
+# Largest single-joint change allowed for one 10mm approach step or the lift. A 10mm step
+# needs a few hundredths of a radian, so anything past this is IK switching arm
+# configuration, which swings the hand through space.
+FINE_MOVE_MAX_JUMP = 0.25
+
+# Largest single-joint change allowed for a correction made at the pre-grasp pose. This
+# was wrongly held to the fine limit (0.35 rad), and a 58-78mm correction legitimately
+# needs ~0.4 rad -- so every correction in the run was refused as a "configuration flip",
+# the hand was never corrected, and it drove in 6-8cm off target. A real flip is well over
+# a radian on some joint; this only catches those.
 COARSE_MOVE_MAX_JUMP = 1.0
 
 # Apple displacement between two readings that counts as the arm having hit it. A
@@ -837,12 +849,21 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
         for _ in range(5):
             rclpy.spin_once(node, timeout_sec=0.05)
         now = apple_xyz(node)
+        d = 0.0
         if watch["last"] is not None and now is not None:
             d = float(np.linalg.norm(now - watch["last"]))
             if d > KNOCK_THRESHOLD:
                 watch["knocks"].append((label, d))
                 print(f"  !! apple moved {d:.3f}m during: {label}")
         watch["last"] = now
+        return d
+
+    def not_positioned(reason):
+        print(f"  NOT APPROACHING THE APPLE: {reason}")
+        return {"preshape": preshape, "palm_tilt": palm_tilt,
+                "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset,
+                "lateral": lateral, "ok": False, "not_positioned": True,
+                "reason": reason}
 
     node.send_arm_trajectory(approach[0], 3.5)
     settle(node, 12.0)
@@ -889,7 +910,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
             stalled += 1
             if stalled >= 2:
                 print(f"  correction stalled at {err_now:.3f}m -- the arm cannot get "
-                      f"closer, continuing from here")
+                      f"closer")
                 break
         else:
             stalled = 0
@@ -902,7 +923,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
                   f"keeping {err_now:.3f}m error")
             break
         jump = joint_jump(again[0], here)
-        if jump > FINE_MOVE_MAX_JUMP:
+        if jump > COARSE_MOVE_MAX_JUMP:
             print(f"  correction {correction_i + 1}: REFUSED -- a {err_now * 1000:.0f}mm "
                   f"fix needed a {jump:.2f} rad joint swing (configuration flip); "
                   f"keeping {err_now:.3f}m error")
@@ -914,26 +935,58 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
         settle(node, 15.0)
         check_knock(f"correction {correction_i + 1}")
 
+    # GATE: never move towards the apple unless the hand is measurably where it should be.
+    real_pre = node.real_wrist_position()
+    if real_pre is None:
+        return not_positioned("cannot read the wrist position")
+    pre_err = float(np.linalg.norm(np.array(real_pre) - pregrasp_pos))
+    if pre_err > APPROACH_GATE:
+        return not_positioned(
+            f"the hand is still {pre_err * 1000:.0f}mm from its pre-grasp pose (limit "
+            f"{APPROACH_GATE * 1000:.0f}mm). Driving in from there is what knocked the "
+            f"apple in every attempt of the previous run.")
+    print(f"  hand verified {pre_err * 1000:.0f}mm from its pre-grasp pose, "
+          f"{PREGRASP_STANDOFF * 1000:.0f}mm clear of the apple")
+
+    # Final approach: 10mm at a time, real position checked after each step, and the sag
+    # compensation re-estimated as it changes along the way. The approach stops the moment
+    # the apple moves or the hand leaves the line -- pushing on would only knock it further.
     compensation = commanded - pregrasp_pos
-    print(f"  moving in {PREGRASP_STANDOFF * 1000:.0f}mm along a straight line, "
-          f"carrying {np.linalg.norm(compensation) * 1000:.0f}mm of sag compensation")
+    print(f"  moving in {PREGRASP_STANDOFF * 1000:.0f}mm in {APPROACH_STEPS} checked "
+          f"steps, carrying {np.linalg.norm(compensation) * 1000:.0f}mm of sag "
+          f"compensation")
+    worst_track = 0.0
     for k in range(1, APPROACH_STEPS + 1):
         frac = k / APPROACH_STEPS
-        waypoint = pregrasp_pos + (wrist_target - pregrasp_pos) * frac + compensation
+        intended = pregrasp_pos + (wrist_target - pregrasp_pos) * frac
         here = arm_now(node)
-        step = solve_ik(node.chain, list(waypoint), target_rotation=rot, current=here)
+        step = solve_ik(node.chain, list(intended + compensation),
+                        target_rotation=rot, current=here)
         if step is None:
-            print(f"  straight-line step {k}/{APPROACH_STEPS} unreachable -- stopping "
-                  f"short of the grasp pose")
-            break
+            return not_positioned(f"approach step {k}/{APPROACH_STEPS} is unreachable")
         jump = joint_jump(step[0], here)
         if jump > FINE_MOVE_MAX_JUMP:
-            print(f"  straight-line step {k}/{APPROACH_STEPS} REFUSED: it needs a "
-                  f"{jump:.2f} rad joint swing (configuration flip) -- stopping short")
-            break
-        node.send_arm_trajectory(step[0], 1.2)
+            return not_positioned(
+                f"approach step {k}/{APPROACH_STEPS} needs a {jump:.2f} rad joint swing "
+                f"for 10mm of travel -- a configuration flip")
+        node.send_arm_trajectory(step[0], 1.0)
         settle(node, 8.0)
-        check_knock(f"straight-line step {k}/{APPROACH_STEPS}")
+        if check_knock(f"approach step {k}/{APPROACH_STEPS}") > KNOCK_THRESHOLD:
+            return not_positioned(
+                f"the apple moved during approach step {k}/{APPROACH_STEPS}, so the hand "
+                f"stopped instead of pushing it further")
+        real_step = node.real_wrist_position()
+        if real_step is None:
+            return not_positioned("lost the wrist position during the approach")
+        track = float(np.linalg.norm(np.array(real_step) - intended))
+        worst_track = max(worst_track, track)
+        if track > TRACK_LIMIT:
+            return not_positioned(
+                f"at approach step {k}/{APPROACH_STEPS} the hand was {track * 1000:.0f}mm "
+                f"off the approach line (limit {TRACK_LIMIT * 1000:.0f}mm)")
+        compensation = compensation + (intended - np.array(real_step)) * CORRECTION_GAIN
+    print(f"  arrived at the grasp pose; worst deviation from the approach line "
+          f"{worst_track * 1000:.0f}mm, apple undisturbed")
 
     # If the apple is no longer in front of the hand, say so plainly and stop. Measuring
     # fingertip gaps, thumb opposition or "centring" against an apple 0.6-1.9m away
@@ -1192,8 +1245,10 @@ def main():
             nm = f"thumb roll {CASES[i][3]:+.2f}"
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim")
-                   else "KNOCKED" if r.get("knocked") else "UNREACHABLE")
-            extra = f"  by {r['knocked_by']}" if r.get("knocked") else ""
+                   else "KNOCKED" if r.get("knocked")
+                   else "HELD BACK" if r.get("not_positioned") else "UNREACHABLE")
+            extra = (f"  by {r['knocked_by']}" if r.get("knocked")
+                     else f"  {r['reason']}" if r.get("not_positioned") else "")
             print(f"{nm:>22} {why:>9}{extra}")
             continue
         mx = max(r["peak"].values())

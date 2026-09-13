@@ -152,19 +152,16 @@ THUMB_ROLL = THUMB_GRASP_ROLL
 REC = {}
 
 CASES = [
-    # (palm_tilt, preshape, lateral, thumb_roll)
+    # (palm_tilt, preshape, lateral, approach method)
     #
-    # Pre-shape is how far the fingers are already curled on the way in (0 = fully open,
-    # 1 = closed). Measured, the hand spans ~15.4cm fully open and 9.2cm at 1.0, so at the
-    # 0.4 used by the pick it spans roughly 13cm around an 11.1cm apple -- about 9mm to
-    # spare on each side, which is no more than the 4-12mm the wrist is typically off by.
-    # That is too little margin, and it matches what was seen in the viewer: the fingers
-    # not open enough to take the apple. 0.2 spans roughly 14cm, about 15mm each side.
-    # 0.4 is kept as the control because it is what produced the pick.
-    (PALM_TILT, 0.4, LATERAL, 0.00),   # control: the configuration that picked the apple
-    (PALM_TILT, 0.2, LATERAL, 0.00),   # wider opening
-    (PALM_TILT, 0.4, LATERAL, 0.00),
-    (PALM_TILT, 0.2, LATERAL, 0.00),
+    # A straight comparison. "pick" is the approach that produced the one successful pick;
+    # "servo" is the new Jacobian approach. Every other setting is the pick's, and both
+    # share the flat-based apples and the stricter reset check. Alternated so neither
+    # method always runs on a fresher simulation.
+    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
+    (PALM_TILT, PRESHAPE, LATERAL, "servo"),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
+    (PALM_TILT, PRESHAPE, LATERAL, "servo"),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -196,7 +193,12 @@ APPROACH_GATE = 0.012
 
 # During the final approach, the most the real wrist may stray from the straight line
 # before the approach is abandoned rather than continued into the apple.
-TRACK_LIMIT = 0.015
+# Raised from 15mm. Two attempts converged at the pre-grasp pose to 3-4mm and were then
+# stopped at approach step 3 or 4 for straying 16-19mm -- just over the old limit -- so
+# the hand never reached the apple at all. A limit this arm cannot meet does not keep
+# the apple safe; it just guarantees no grasp. The knock check still stops the approach
+# the moment the apple actually moves.
+TRACK_LIMIT = 0.025
 
 # Largest single-joint change allowed for one 10mm approach step or the lift. A 10mm step
 # needs a few hundredths of a radian, so anything past this is IK switching arm
@@ -218,8 +220,12 @@ SERVO_MOVE_TIME = 0.8      # seconds per servo step
 SERVO_TOL = 0.004          # how close the pre-grasp correction aims to get
 SERVO_MAX_ITERS = 25       # pre-grasp correction budget; a 75mm error needs ~8 steps
 APPROACH_TOL = 0.004       # per-waypoint tolerance on the final approach
-APPROACH_SERVO_ITERS = 4   # servo steps allowed per 10mm approach waypoint
+APPROACH_SERVO_ITERS = 6   # servo steps allowed per 10mm approach waypoint
 SERVO_ROT_TOL_DEG = 3.0    # palm orientation must also be this close
+
+# The approach that produced the pick, reproduced exactly for the side-by-side test.
+PICK_WRIST_TOLERANCE = 0.020
+PICK_CORRECTION_ITERS = 9
 
 # Apple displacement between two readings that counts as the arm having hit it. A
 # settled apple drifts under 2mm.
@@ -541,8 +547,8 @@ def servo_to(node, target_pos, target_rot, tol, max_iters, label, on_step=None,
         if biggest > SERVO_MAX_JOINT:
             dq = dq * (SERVO_MAX_JOINT / biggest)
         if verbose:
-            print(f"  {label} {i}: {err * 1000:.0f}mm off, largest joint change "
-                  f"{float(np.max(np.abs(dq))):.3f} rad")
+            print(f"  {label} {i}: {err * 1000:.0f}mm off, palm {ang:.1f}deg off, "
+                  f"largest joint change {float(np.max(np.abs(dq))):.3f} rad")
         node.send_arm_trajectory(list(np.array(q) + dq), SERVO_MOVE_TIME)
         settle(node, 6.0, min_wait=SERVO_MOVE_TIME + 0.3)
         if on_step is not None and not on_step(f"{label} {i}"):
@@ -858,15 +864,16 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
+def attempt(node, target_name, palm_tilt, preshape, lateral, method):
     global THUMB_ROLL
-    THUMB_ROLL = thumb_roll
+    THUMB_ROLL = THUMB_GRASP_ROLL
     palm_offset = PALM_OFFSET
     REC.clear()
     REC["preshape"] = preshape
-    label = (f"pre-shape {preshape:.1f} (0=open, 1=closed), "
-             f"preshape {preshape:.1f}")
-    print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
+    REC["method"] = method
+    label = (f"approach: {method.upper()}   pre-shape {preshape:.1f} "
+             f"(0=open, 1=closed)")
+    print(f"\n{'=' * 72}\n{label}\n{'=' * 72}")
     rot = tilted_palm_rotation(palm_tilt)
 
     wx, wy = APPLE_HOME_WORLD_XY[target_name]
@@ -1018,68 +1025,110 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
     settle(node, 12.0)
     check_knock("the move to the approach pose")
 
-    # One coarse IK move to the pre-grasp pose -- the only large move near the apple.
-    pregrasp_pos = wrist_target + wrist_rot @ np.array([0.0, 0.0, -PREGRASP_STANDOFF])
-    here = arm_now(node)
-    pregrasp = solve_ik(node.chain, list(pregrasp_pos), target_rotation=rot, current=here)
-    if pregrasp is None:
-        return not_positioned("the pre-grasp pose is unreachable")
-    jump = joint_jump(pregrasp[0], here)
-    if jump > COARSE_MOVE_MAX_JUMP:
-        return not_positioned(f"the move to pre-grasp needs a {jump:.2f} rad joint swing "
-                              f"(a configuration flip)")
-    node.send_arm_trajectory(pregrasp[0], 2.5)
-    settle(node, 15.0)
-    check_knock("the move to the pre-grasp pose")
-    real0 = node.real_wrist_position()
-    if real0 is not None:
-        REC["first_err"] = float(np.linalg.norm(np.array(real0) - pregrasp_pos))
-        print(f"  first move landed {REC['first_err'] * 1000:.0f}mm from the pre-grasp pose")
+    if method == "pick":
+        # EXACTLY the approach that produced the only successful pick (commit 9fabc26):
+        # one IK move straight to the grasp pose, then up to 9 corrections there, stopping
+        # once within 20mm. It lost the apple often afterwards -- but a large share of those
+        # losses were the apple rolling away on its own, a perfect sphere with nothing to
+        # stop a roll, which the flat base has since fixed. So it gets a fair re-test here,
+        # side by side with the servo approach, instead of being judged on runs where the
+        # apple would not stay still. Knocks are logged but do not abort.
+        node.send_arm_trajectory(grasp[0], 3.0)
+        settle(node, 20.0)
+        check_knock("the move to the grasp pose")
+        real0 = node.real_wrist_position()
+        if real0 is not None:
+            REC["first_err"] = float(np.linalg.norm(np.array(real0) - wrist_target))
+            print(f"  first move landed {REC['first_err'] * 1000:.0f}mm from the grasp pose")
+        corrected = list(wrist_target)
+        for correction_i in range(PICK_CORRECTION_ITERS):
+            real_now = node.real_wrist_position()
+            if real_now is None:
+                break
+            err_now = float(np.linalg.norm(np.array(real_now) - wrist_target))
+            if err_now < PICK_WRIST_TOLERANCE:
+                break
+            corrected = list(np.array(corrected)
+                             + (wrist_target - np.array(real_now)) * CORRECTION_GAIN)
+            again = solve_ik(node.chain, corrected, target_rotation=rot)
+            if again is None:
+                print(f"  correction {correction_i + 1}: corrected target unreachable, "
+                      f"keeping {err_now:.3f}m error")
+                break
+            print(f"  correction {correction_i + 1}: err {err_now:.3f}m -> re-solving")
+            node.send_arm_trajectory(again[0], 2.0)
+            settle(node, 15.0)
+            check_knock(f"correction {correction_i + 1}")
+        real_end = node.real_wrist_position()
+        if real_end is not None:
+            REC["pre_err"] = float(np.linalg.norm(np.array(real_end) - wrist_target))
+        REC["steps"] = "direct"
+        now = apple_xyz(node)
+        if before is not None and now is not None:
+            REC["apple_moved"] = float(np.linalg.norm(now - before))
+    else:
+        # One coarse IK move to the pre-grasp pose -- the only large move near the apple.
+        pregrasp_pos = wrist_target + wrist_rot @ np.array([0.0, 0.0, -PREGRASP_STANDOFF])
+        here = arm_now(node)
+        pregrasp = solve_ik(node.chain, list(pregrasp_pos), target_rotation=rot, current=here)
+        if pregrasp is None:
+            return not_positioned("the pre-grasp pose is unreachable")
+        jump = joint_jump(pregrasp[0], here)
+        if jump > COARSE_MOVE_MAX_JUMP:
+            return not_positioned(f"the move to pre-grasp needs a {jump:.2f} rad joint swing "
+                                  f"(a configuration flip)")
+        node.send_arm_trajectory(pregrasp[0], 2.5)
+        settle(node, 15.0)
+        check_knock("the move to the pre-grasp pose")
+        real0 = node.real_wrist_position()
+        if real0 is not None:
+            REC["first_err"] = float(np.linalg.norm(np.array(real0) - pregrasp_pos))
+            print(f"  first move landed {REC['first_err'] * 1000:.0f}mm from the pre-grasp pose")
 
-    def still_ok(label):
-        return check_knock(label) <= KNOCK_THRESHOLD
+        def still_ok(label):
+            return check_knock(label) <= KNOCK_THRESHOLD
 
-    # Fine correction, clear of the apple, by Jacobian servo.
-    status, pre_err, steps = servo_to(node, pregrasp_pos, rot, SERVO_TOL, SERVO_MAX_ITERS,
-                                      "correction", on_step=still_ok)
-    REC["pre_err"] = pre_err
-    if status == "no_tf" or pre_err is None:
-        return not_positioned("cannot read the wrist position")
-    if status == "knock":
-        return not_positioned("the apple moved while the hand was being corrected")
-    if pre_err > APPROACH_GATE:
-        return not_positioned(
-            f"after {steps} correction steps the hand is still {pre_err * 1000:.0f}mm from "
-            f"its pre-grasp pose (limit {APPROACH_GATE * 1000:.0f}mm)")
-    print(f"  hand verified {pre_err * 1000:.0f}mm from its pre-grasp pose after {steps} "
-          f"correction steps, {PREGRASP_STANDOFF * 1000:.0f}mm clear of the apple")
-
-    # Final approach: 10mm waypoints on a straight line, each reached by servo and checked.
-    print(f"  moving in {PREGRASP_STANDOFF * 1000:.0f}mm in {APPROACH_STEPS} checked "
-          f"10mm steps")
-    worst_track = 0.0
-    REC["steps"] = f"0/{APPROACH_STEPS}"
-    for k in range(1, APPROACH_STEPS + 1):
-        waypoint = pregrasp_pos + (wrist_target - pregrasp_pos) * (k / APPROACH_STEPS)
-        status, err_k, _ = servo_to(node, waypoint, rot, APPROACH_TOL, APPROACH_SERVO_ITERS,
-                                    f"approach step {k}/{APPROACH_STEPS}",
-                                    on_step=still_ok, verbose=False)
-        if status == "no_tf" or err_k is None:
-            return not_positioned("lost the wrist position during the approach")
+        # Fine correction, clear of the apple, by Jacobian servo.
+        status, pre_err, steps = servo_to(node, pregrasp_pos, rot, SERVO_TOL, SERVO_MAX_ITERS,
+                                          "correction", on_step=still_ok)
+        REC["pre_err"] = pre_err
+        if status == "no_tf" or pre_err is None:
+            return not_positioned("cannot read the wrist position")
         if status == "knock":
+            return not_positioned("the apple moved while the hand was being corrected")
+        if pre_err > APPROACH_GATE:
             return not_positioned(
-                f"the apple moved during approach step {k}/{APPROACH_STEPS}, so the hand "
-                f"stopped instead of pushing it further")
-        worst_track = max(worst_track, err_k)
-        REC["steps"] = f"{k}/{APPROACH_STEPS}"
-        if err_k > TRACK_LIMIT:
-            return not_positioned(
-                f"at approach step {k}/{APPROACH_STEPS} the hand was {err_k * 1000:.0f}mm off "
-                f"the approach line (limit {TRACK_LIMIT * 1000:.0f}mm)")
-    if before is not None and apple_xyz(node) is not None:
-        REC["apple_moved"] = float(np.linalg.norm(apple_xyz(node) - before))
-    print(f"  arrived at the grasp pose; worst deviation from the approach line "
-          f"{worst_track * 1000:.0f}mm, apple undisturbed")
+                f"after {steps} correction steps the hand is still {pre_err * 1000:.0f}mm from "
+                f"its pre-grasp pose (limit {APPROACH_GATE * 1000:.0f}mm)")
+        print(f"  hand verified {pre_err * 1000:.0f}mm from its pre-grasp pose after {steps} "
+              f"correction steps, {PREGRASP_STANDOFF * 1000:.0f}mm clear of the apple")
+
+        # Final approach: 10mm waypoints on a straight line, each reached by servo and checked.
+        print(f"  moving in {PREGRASP_STANDOFF * 1000:.0f}mm in {APPROACH_STEPS} checked "
+              f"10mm steps")
+        worst_track = 0.0
+        REC["steps"] = f"0/{APPROACH_STEPS}"
+        for k in range(1, APPROACH_STEPS + 1):
+            waypoint = pregrasp_pos + (wrist_target - pregrasp_pos) * (k / APPROACH_STEPS)
+            status, err_k, _ = servo_to(node, waypoint, rot, APPROACH_TOL, APPROACH_SERVO_ITERS,
+                                        f"approach step {k}/{APPROACH_STEPS}",
+                                        on_step=still_ok, verbose=False)
+            if status == "no_tf" or err_k is None:
+                return not_positioned("lost the wrist position during the approach")
+            if status == "knock":
+                return not_positioned(
+                    f"the apple moved during approach step {k}/{APPROACH_STEPS}, so the hand "
+                    f"stopped instead of pushing it further")
+            worst_track = max(worst_track, err_k)
+            REC["steps"] = f"{k}/{APPROACH_STEPS}"
+            if err_k > TRACK_LIMIT:
+                return not_positioned(
+                    f"at approach step {k}/{APPROACH_STEPS} the hand was {err_k * 1000:.0f}mm off "
+                    f"the approach line (limit {TRACK_LIMIT * 1000:.0f}mm)")
+        if before is not None and apple_xyz(node) is not None:
+            REC["apple_moved"] = float(np.linalg.norm(apple_xyz(node) - before))
+        print(f"  arrived at the grasp pose; worst deviation from the approach line "
+              f"{worst_track * 1000:.0f}mm, apple undisturbed")
 
     # If the apple is no longer in front of the hand, say so plainly and stop. Measuring
     # fingertip gaps, thumb opposition or "centring" against an apple 0.6-1.9m away
@@ -1376,24 +1425,23 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'pre-shape':>9}  {'apple still':>11}  {'1st move off':>12}  "
+    print(f"{'#':>2}  {'method':>6}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
-        pre = rec.get("preshape")
-        print(f"{idx:>2}  {('-' if pre is None else f'{pre:.1f}'):>9}  "
+        print(f"{idx:>2}  {rec.get('method', '-'):>6}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")
 
     print("\n2) THE GRASP ITSELF (only filled in when the hand reached the apple)")
-    print(f"{'#':>2}  {'nearest tip':>11}  {'touched':>7}  {'under widest':>12}  "
+    print(f"{'#':>2}  {'method':>6}  {'nearest tip':>11}  {'touched':>7}  {'under widest':>12}  "
           f"{'gripping':>8}  {'thumb vs fingers':>16}  {'lift':>8}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
         touched = rec.get("contacts")
         gripping = rec.get("holding")
         opp = rec.get("opposition")
         lift = rec.get("lift")
-        print(f"{idx:>2}  {mm(rec.get('nearest_tip')):>11}  "
+        print(f"{idx:>2}  {rec.get('method', '-'):>6}  {mm(rec.get('nearest_tip')):>11}  "
               f"{('-' if touched is None else f'{touched}/5'):>7}  "
               f"{rec.get('below', '-'):>12}  "
               f"{('-' if gripping is None else f'{gripping}/5'):>8}  "
@@ -1402,13 +1450,16 @@ def main():
 
     print("\nWHAT HAPPENED IN EACH ATTEMPT")
     for idx, rec, result, why in rows:
-        print(f"  {idx}. {result}: {why}")
+        print(f"  {idx}. [{rec.get('method', '-')}] {result}: {why}")
 
     print("\nHOW TO READ THIS")
+    print("  method           -- pick = the approach that produced the one successful pick;")
+    print("                      servo = the new step-by-step approach")
     print("  apple still      -- the apple was resting still before the attempt began")
     print(f"  1st move off     -- how far the first rough move missed (normal: 50-90mm)")
-    print(f"  after fixing     -- how far off after correction; must be under "
-          f"{APPROACH_GATE * 1000:.0f}mm to approach")
+    print("  after fixing     -- how far off after correction. pick: from the grasp pose "
+          f"(stops under {PICK_WRIST_TOLERANCE * 1000:.0f}mm); servo: from the pre-grasp "
+          f"pose (must be under {APPROACH_GATE * 1000:.0f}mm to approach)")
     print(f"  approach         -- how many of the {APPROACH_STEPS} final 10mm steps were "
           f"completed")
     print("  apple moved      -- how far the apple moved during the whole attempt")
@@ -1422,6 +1473,15 @@ def main():
 
     picked = sum(1 for _, _, result, _ in rows if result == "PICKED")
     print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS.")
+    for m in ("pick", "servo"):
+        mine = [(rec, result) for _, rec, result, _ in rows if rec.get("method") == m]
+        if not mine:
+            continue
+        reached = sum(1 for rec, _ in mine if rec.get("contacts") is not None)
+        touched = [rec["contacts"] for rec, _ in mine if rec.get("contacts") is not None]
+        got = sum(1 for _, result in mine if result == "PICKED")
+        print(f"  {m:>5}: reached the apple {reached}/{len(mine)}, fingers touching "
+              f"{', '.join(str(t) for t in touched) or 'none'}, picked {got}/{len(mine)}")
 
     node.destroy_node()
     rclpy.shutdown()

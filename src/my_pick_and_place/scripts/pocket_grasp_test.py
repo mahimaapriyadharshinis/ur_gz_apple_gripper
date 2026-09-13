@@ -152,17 +152,16 @@ THUMB_ROLL = THUMB_GRASP_ROLL
 REC = {}
 
 CASES = [
-    # (palm_tilt, preshape, lateral, approach method)
+    # (palm_tilt, preshape, lateral, approach method, grasp lowered by)
     #
-    # Side-by-side result: "pick" reached the apple 2 of 2 times (5 and 2 fingers
-    # touching, apple disturbed 10mm and 0mm); "servo" reached it 0 of 2 -- both times
-    # its error stayed at 125-127mm for all 25 correction steps, i.e. the arm did not
-    # respond at all, on top of never reaching the apple in the two runs before. The
-    # servo approach is dropped from the runs; four attempts with the one that works.
-    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
+    # The pick approach now reaches the apple every time -- 4/4 last run, with 5, 5, 5
+    # and 3 fingers touching and the apple disturbed 0-24mm. What stops the lift is how
+    # low the fingers wrap (see wrist_target), so that is the variable. 8mm and 15mm
+    # bracket where the two best attempts actually settled; alternated, two of each.
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.015),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.015),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -884,15 +883,16 @@ def apple_xyz(node):
     return np.array([p.x, p.y, p.z])
 
 
-def attempt(node, target_name, palm_tilt, preshape, lateral, method):
+def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0):
     global THUMB_ROLL
     THUMB_ROLL = THUMB_GRASP_ROLL
     palm_offset = PALM_OFFSET
     REC.clear()
     REC["preshape"] = preshape
     REC["method"] = method
-    label = (f"approach: {method.upper()}   pre-shape {preshape:.1f} "
-             f"(0=open, 1=closed)")
+    REC["drop"] = drop
+    label = (f"approach: {method.upper()}   grasp lowered {drop * 1000:.0f}mm   "
+             f"pre-shape {preshape:.1f}")
     print(f"\n{'=' * 72}\n{label}\n{'=' * 72}")
     rot = tilted_palm_rotation(palm_tilt)
 
@@ -962,6 +962,15 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method):
                           AIM_DEPTH])
     offset_local = wrist_rot @ aim_point
     wrist_target = apple_local - offset_local
+    # Lower the grasp on purpose. How far below the apple's middle the fingers meet it
+    # decides the lift, attempt for attempt:
+    #   fingers meeting it on average 12mm below the middle -> lifted 8.5cm (the pick)
+    #                                 10mm below             -> 5.9cm
+    #                                 at the middle          -> 4.3cm and 2.0cm
+    #                                 9mm above              -> -0.2cm
+    # and the two best attempts are the two where the arm happened to settle LOWER than
+    # its 0.604 target (0.597 and 0.587). Rather than depend on where it settles, aim low.
+    wrist_target = wrist_target + np.array([0.0, 0.0, -drop])
 
     print(f"  apple at local ({apple_local[0]:.3f}, {apple_local[1]:.3f}, {apple_local[2]:.3f})")
     print(f"  pocket offset rotated -> ({offset_local[0]:.3f}, {offset_local[1]:.3f}, "
@@ -1399,8 +1408,8 @@ def main():
 
     results = []
     records = []
-    for pt, ps, lat, po in CASES:
-        r = attempt(node, target_name, pt, ps, lat, po)
+    for pt, ps, lat, po, dr in CASES:
+        r = attempt(node, target_name, pt, ps, lat, po, dr)
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -1445,23 +1454,23 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'method':>6}  {'apple still':>11}  {'1st move off':>12}  "
+    print(f"{'#':>2}  {'lowered':>7}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
-        print(f"{idx:>2}  {rec.get('method', '-'):>6}  "
+        print(f"{idx:>2}  {mm(rec.get('drop')):>7}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")
 
     print("\n2) THE GRASP ITSELF (only filled in when the hand reached the apple)")
-    print(f"{'#':>2}  {'method':>6}  {'nearest tip':>11}  {'touched':>7}  {'under widest':>12}  "
+    print(f"{'#':>2}  {'lowered':>7}  {'nearest tip':>11}  {'touched':>7}  {'under widest':>12}  "
           f"{'gripping':>8}  {'thumb vs fingers':>16}  {'lift':>8}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
         touched = rec.get("contacts")
         gripping = rec.get("holding")
         opp = rec.get("opposition")
         lift = rec.get("lift")
-        print(f"{idx:>2}  {rec.get('method', '-'):>6}  {mm(rec.get('nearest_tip')):>11}  "
+        print(f"{idx:>2}  {mm(rec.get('drop')):>7}  {mm(rec.get('nearest_tip')):>11}  "
               f"{('-' if touched is None else f'{touched}/5'):>7}  "
               f"{rec.get('below', '-'):>12}  "
               f"{('-' if gripping is None else f'{gripping}/5'):>8}  "
@@ -1470,11 +1479,10 @@ def main():
 
     print("\nWHAT HAPPENED IN EACH ATTEMPT")
     for idx, rec, result, why in rows:
-        print(f"  {idx}. [{rec.get('method', '-')}] {result}: {why}")
+        print(f"  {idx}. [lowered {mm(rec.get('drop'))}] {result}: {why}")
 
     print("\nHOW TO READ THIS")
-    print("  method           -- pick = the approach that produced the one successful pick;")
-    print("                      servo = the new step-by-step approach")
+    print("  lowered          -- how far below the normal grasp height the hand was aimed")
     print("  apple still      -- the apple was resting still before the attempt began")
     print(f"  1st move off     -- how far the first rough move missed (normal: 50-90mm)")
     print("  after fixing     -- how far off after correction. pick: from the grasp pose "
@@ -1494,15 +1502,15 @@ def main():
 
     picked = sum(1 for _, _, result, _ in rows if result == "PICKED")
     print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS.")
-    for m in ("pick", "servo"):
-        mine = [(rec, result) for _, rec, result, _ in rows if rec.get("method") == m]
-        if not mine:
-            continue
-        reached = sum(1 for rec, _ in mine if rec.get("contacts") is not None)
-        touched = [rec["contacts"] for rec, _ in mine if rec.get("contacts") is not None]
+    for d in sorted({rec.get("drop") for _, rec, _, _ in rows if rec.get("drop") is not None}):
+        mine = [(rec, result) for _, rec, result, _ in rows if rec.get("drop") == d]
+        lifts = [rec["lift"] for rec, _ in mine if rec.get("lift") is not None]
+        unders = [rec["below"] for rec, _ in mine if rec.get("below")]
         got = sum(1 for _, result in mine if result == "PICKED")
-        print(f"  {m:>5}: reached the apple {reached}/{len(mine)}, fingers touching "
-              f"{', '.join(str(t) for t in touched) or 'none'}, picked {got}/{len(mine)}")
+        print(f"  lowered {d * 1000:>2.0f}mm: fingers under the widest part "
+              f"{', '.join(unders) or '-'}, lifts "
+              f"{', '.join(f'{x * 100:+.1f}cm' for x in lifts) or '-'}, "
+              f"picked {got}/{len(mine)}")
 
     node.destroy_node()
     rclpy.shutdown()

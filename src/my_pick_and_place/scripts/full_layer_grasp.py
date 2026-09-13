@@ -362,7 +362,7 @@ PALM_DOWN_ROTATION = np.array([
 ])
 
 
-def solve_ik(chain, target_xyz, init=None, target_rotation=None):
+def solve_ik(chain, target_xyz, init=None, target_rotation=None, current=None):
     # Computed early so guesses can be seeded AT the target's actual direction --
     # confirmed by testing that fixed-angle presets alone (0.3/-0.3 rad) let the solver
     # converge to a ~132-138 degree "mirror" configuration regardless of where the
@@ -374,6 +374,15 @@ def solve_ik(chain, target_xyz, init=None, target_rotation=None):
     guesses = []
     if init is not None:
         guesses.append(init)
+    # Seed from where the arm actually IS, when the caller says. Without this every call
+    # starts only from fixed presets, so two targets a few millimetres apart can come back
+    # in different arm configurations (elbow up vs down, wrist flipped).
+    if current is not None:
+        current_full = [0.0] * len(chain.links)
+        for i, link in enumerate(chain.links):
+            if link.name in ARM_JOINTS:
+                current_full[i] = float(current[ARM_JOINTS.index(link.name)])
+        guesses.append(current_full)
     presets = [
         {'shoulder_lift_joint': -1.5708, 'wrist_1_joint': -1.5708, 'wrist_2_joint': -1.5708},
         {'shoulder_lift_joint': -1.0, 'elbow_joint': 1.2, 'wrist_1_joint': -1.7, 'wrist_2_joint': -1.5708},
@@ -565,8 +574,26 @@ def solve_ik(chain, target_xyz, init=None, target_rotation=None):
     # proxy for "does this look like a normal reach or a contorted one" -- minimizing
     # it first favors a moderately-bent elbow and a shoulder that isn't swung to an
     # extreme, exactly the property the earlier criteria failed to capture.
-    best = min(valid_solutions, key=lambda sol: (
-        total_motion(sol), angle_diff(pan_of(sol), expected_pan), -facing_alignment(sol)))
+    if current is not None:
+        # Prefer the solution needing the least joint movement FROM WHERE THE ARM IS.
+        #
+        # total_motion measures angles from zero and ignores the arm's present pose, so
+        # for small corrective moves it could pick a different configuration from the
+        # one the arm was already in. The trajectory controller then drives every joint
+        # straight to the new angles, and the hand swings through space on the way --
+        # through the apple. Logged directly: correction errors of 0.023 -> 0.078 ->
+        # 0.077 -> 0.023m, the arm flipping into another configuration and back, while
+        # the apple was knocked 0.2-1.9m before a finger moved. Plain absolute joint
+        # difference, not wrapped: the controller moves real angles, so a joint at +3.1
+        # and one at -3.1 are a full turn apart, not 0.08 rad.
+        def distance_from_current(sol):
+            return sum(abs(a - current[ARM_JOINTS.index(link.name)])
+                       for link, a in zip(chain.links, sol) if link.name in ARM_JOINTS)
+        best = min(valid_solutions, key=lambda sol: (
+            distance_from_current(sol), total_motion(sol)))
+    else:
+        best = min(valid_solutions, key=lambda sol: (
+            total_motion(sol), angle_diff(pan_of(sol), expected_pan), -facing_alignment(sol)))
     joints = {link.name: float(a) for link, a in zip(chain.links, best) if link.name in ARM_JOINTS}
     return [joints[j] for j in ARM_JOINTS], best
 

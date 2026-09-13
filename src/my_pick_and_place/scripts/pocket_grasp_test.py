@@ -183,6 +183,20 @@ PREGRASP_STANDOFF = 0.040
 # How many straight-line steps to cover that last stretch in.
 APPROACH_STEPS = 4
 
+# Largest single-joint change allowed for a SMALL move (a correction, a straight-line
+# step, the lift). A few centimetres of wrist travel needs a few hundredths of a radian;
+# anything past this is IK switching to a different arm configuration, and driving
+# there swings the whole hand through space.
+FINE_MOVE_MAX_JUMP = 0.35
+
+# The approach-to-pre-grasp move covers ~12cm, so it legitimately needs more -- but a
+# configuration flip is typically well over a radian on some joint.
+COARSE_MOVE_MAX_JUMP = 1.0
+
+# Apple displacement between two readings that counts as the arm having hit it. A
+# settled apple drifts under 2mm.
+KNOCK_THRESHOLD = 0.010
+
 # Below this angle between thumb and fingers (about the apple's centre) the grasp has an
 # open side, so squeezing drives the apple out rather than trapping it.
 OPPOSITION_MIN_DEG = 120.0
@@ -401,6 +415,24 @@ def tilted_palm_rotation(tilt_rad):
     c, s_ = float(np.cos(tilt_rad)), float(np.sin(tilt_rad))
     r_y = np.array([[c, 0.0, s_], [0.0, 1.0, 0.0], [-s_, 0.0, c]])
     return r_y @ PALM_DOWN_ROTATION
+
+
+def arm_now(node):
+    """The arm's current joint angles, in ARM_JOINTS order, or None if not all known."""
+    vals = []
+    for j in ARM_JOINTS:
+        pos = node.latest_joint_state.get(j, (None, None, None))[0]
+        if pos is None:
+            return None
+        vals.append(float(pos))
+    return vals
+
+
+def joint_jump(target, current):
+    """Largest single-joint change between two ARM_JOINTS-ordered angle lists."""
+    if target is None or current is None:
+        return 0.0
+    return float(max(abs(a - b) for a, b in zip(target, current)))
 
 
 def live_apple_local(node, fallback):
@@ -652,7 +684,8 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 peak[g] = max(peak[g], abs(eff or 0.0))
 
     after_squeeze = apple_xyz(node)
-    if before_squeeze is not None and after_squeeze is not None:
+    if (any(contacted.values()) and before_squeeze is not None
+            and after_squeeze is not None):
         moved = float(np.linalg.norm(np.array(after_squeeze) - np.array(before_squeeze)))
         print(f"  the squeeze itself moved the apple {moved:.3f}m"
               + ("" if moved < 0.010
@@ -796,32 +829,51 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
     print(f"  approaching from ({approach_pos[0]:.3f}, {approach_pos[1]:.3f}, "
           f"{approach_pos[2]:.3f}) -- {APPROACH_BACKOFF:.2f}m back, then moving in "
           f"sideways rather than descending onto the apple")
+    # Track the apple across every arm move so a knock is attributed to the move that
+    # caused it, instead of being inferred afterwards from a single before/after number.
+    watch = {"last": apple_xyz(node), "knocks": []}
+
+    def check_knock(label):
+        for _ in range(5):
+            rclpy.spin_once(node, timeout_sec=0.05)
+        now = apple_xyz(node)
+        if watch["last"] is not None and now is not None:
+            d = float(np.linalg.norm(now - watch["last"]))
+            if d > KNOCK_THRESHOLD:
+                watch["knocks"].append((label, d))
+                print(f"  !! apple moved {d:.3f}m during: {label}")
+        watch["last"] = now
+
     node.send_arm_trajectory(approach[0], 3.5)
     settle(node, 12.0)
+    check_knock("the move to the approach pose")
 
-    # Correct the wrist in FREE SPACE, then move in once.
+    # Correct the wrist clear of the apple, staying in ONE arm configuration throughout.
     #
-    # Every correction used to run at the grasp pose itself, with the fingertips a few
-    # millimetres from the apple -- and every correction move bumped it. Across thirteen
-    # logged attempts the split is total: attempts where the arm made 0-1 real moves next
-    # to the apple knocked it 0.002-0.016m (and include the only successful pick), while
-    # attempts making 6-9 moves knocked it 0.041-0.340m and every one failed. Tightening
-    # the tolerance to 8mm made that worse, because it forced more of those moves.
-    #
-    # So the loop now runs at a pre-grasp pose PREGRASP_STANDOFF back along the hand's
-    # own forward axis, where nothing is near the apple. The compensation it finds -- the
-    # arm's own sag at this reach -- is then carried into the grasp pose, and the last
-    # few centimetres are covered along a straight line in small steps rather than one
-    # joint-space move, whose curved path can sweep the hand through the fruit.
+    # Every IK solve below is seeded from the arm's current joints and chooses the
+    # solution nearest them. Before this, each solve was free to return a different arm
+    # configuration for a target millimetres away, and driving between configurations
+    # swings the hand through space -- which is what was knocking the apple 0.2-1.9m
+    # before a finger moved. A move that would still need a large joint swing is refused
+    # rather than sent.
     pregrasp_pos = wrist_target + wrist_rot @ np.array([0.0, 0.0, -PREGRASP_STANDOFF])
-    pregrasp = solve_ik(node.chain, list(pregrasp_pos), target_rotation=rot)
+    here = arm_now(node)
+    pregrasp = solve_ik(node.chain, list(pregrasp_pos), target_rotation=rot, current=here)
     if pregrasp is None:
         print("  pre-grasp pose UNREACHABLE")
         return {"preshape": preshape, "palm_tilt": palm_tilt,
                 "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset,
                 "lateral": lateral, "ok": False}
+    jump = joint_jump(pregrasp[0], here)
+    if jump > COARSE_MOVE_MAX_JUMP:
+        print(f"  REFUSED the move to pre-grasp: it needs a {jump:.2f} rad joint swing, "
+              f"which is a configuration flip that would sweep the hand around")
+        return {"preshape": preshape, "palm_tilt": palm_tilt,
+                "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset,
+                "lateral": lateral, "ok": False}
     node.send_arm_trajectory(pregrasp[0], 2.5)
     settle(node, 15.0)
+    check_knock("the move to the pre-grasp pose")
 
     commanded = np.array(pregrasp_pos, dtype=float)
     last_err = None
@@ -833,9 +885,6 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
         err_now = float(np.linalg.norm(np.array(real_now) - pregrasp_pos))
         if err_now < WRIST_TOLERANCE:
             break
-        # Stop once the correction has stopped achieving anything: the arm can be at the
-        # limit of what it can hold against gravity, and re-solving then does nothing
-        # but set it swinging.
         if last_err is not None and abs(last_err - err_now) < 0.001:
             stalled += 1
             if stalled >= 2:
@@ -845,17 +894,25 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
         else:
             stalled = 0
         last_err = err_now
-        # Damped: feeding back the full error overshoots and bounces.
-        commanded = commanded + (pregrasp_pos - np.array(real_now)) * CORRECTION_GAIN
-        again = solve_ik(node.chain, list(commanded), target_rotation=rot)
+        candidate = commanded + (pregrasp_pos - np.array(real_now)) * CORRECTION_GAIN
+        here = arm_now(node)
+        again = solve_ik(node.chain, list(candidate), target_rotation=rot, current=here)
         if again is None:
             print(f"  correction {correction_i + 1}: corrected target unreachable, "
                   f"keeping {err_now:.3f}m error")
             break
+        jump = joint_jump(again[0], here)
+        if jump > FINE_MOVE_MAX_JUMP:
+            print(f"  correction {correction_i + 1}: REFUSED -- a {err_now * 1000:.0f}mm "
+                  f"fix needed a {jump:.2f} rad joint swing (configuration flip); "
+                  f"keeping {err_now:.3f}m error")
+            break
+        commanded = candidate
         print(f"  correction {correction_i + 1} (clear of the apple): "
-              f"err {err_now:.3f}m -> re-solving")
+              f"err {err_now:.3f}m, largest joint change {jump:.3f} rad")
         node.send_arm_trajectory(again[0], 2.0)
         settle(node, 15.0)
+        check_knock(f"correction {correction_i + 1}")
 
     compensation = commanded - pregrasp_pos
     print(f"  moving in {PREGRASP_STANDOFF * 1000:.0f}mm along a straight line, "
@@ -863,13 +920,39 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
     for k in range(1, APPROACH_STEPS + 1):
         frac = k / APPROACH_STEPS
         waypoint = pregrasp_pos + (wrist_target - pregrasp_pos) * frac + compensation
-        step = solve_ik(node.chain, list(waypoint), target_rotation=rot)
+        here = arm_now(node)
+        step = solve_ik(node.chain, list(waypoint), target_rotation=rot, current=here)
         if step is None:
             print(f"  straight-line step {k}/{APPROACH_STEPS} unreachable -- stopping "
                   f"short of the grasp pose")
             break
+        jump = joint_jump(step[0], here)
+        if jump > FINE_MOVE_MAX_JUMP:
+            print(f"  straight-line step {k}/{APPROACH_STEPS} REFUSED: it needs a "
+                  f"{jump:.2f} rad joint swing (configuration flip) -- stopping short")
+            break
         node.send_arm_trajectory(step[0], 1.2)
         settle(node, 8.0)
+        check_knock(f"straight-line step {k}/{APPROACH_STEPS}")
+
+    # If the apple is no longer in front of the hand, say so plainly and stop. Measuring
+    # fingertip gaps, thumb opposition or "centring" against an apple 0.6-1.9m away
+    # produces confident-looking numbers that mean nothing -- a "3deg" thumb opposition
+    # was reported for exactly that reason.
+    for _ in range(10):
+        rclpy.spin_once(node, timeout_sec=0.1)
+    gone_by = float(np.linalg.norm(live_apple_local(node, apple_local) - apple_local))
+    if gone_by > APPLE_RADIUS.get(target_name, 0.0555) + 0.05:
+        culprit = (max(watch["knocks"], key=lambda kd: kd[1])
+                   if watch["knocks"] else None)
+        print(f"  APPLE GONE: it is {gone_by:.3f}m from where the hand is aiming. "
+              + (f"Knocked hardest by {culprit[0]} ({culprit[1]:.3f}m)."
+                 if culprit else "No single arm move moved it past the threshold."))
+        print("  The grasp was never attempted -- skipping closing and lift.")
+        return {"preshape": preshape, "palm_tilt": palm_tilt,
+                "thumb_yaw": THUMB_GRASP_YAW, "palm_offset": palm_offset,
+                "lateral": lateral, "ok": False, "knocked": True,
+                "knocked_by": culprit[0] if culprit else "unattributed"}
 
     real = node.real_wrist_position()
     if real is None:
@@ -937,6 +1020,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
               f"against where it actually is")
     gaps = fingertip_gaps(node, apple_now,
                           APPLE_RADIUS.get(target_name, 0.0555))
+    reach = []
     if gaps:
         print("  fingertip gap to the apple surface before closing:")
         print("    " + ", ".join(
@@ -983,7 +1067,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
         radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW)
     n = sum(contacted.values())
     print(f"  fingers contacted: {n}/5")
-    opp = thumb_opposition(node, live_apple_local(node, apple_now))
+    opp = thumb_opposition(node, live_apple_local(node, apple_now)) if n > 0 else None
     if opp is not None:
         angle, nearest = opp
         print(f"  thumb vs fingers around the apple: {angle:.0f}deg apart "
@@ -1010,7 +1094,12 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
     # the hold is maintained through the lift rather than relaxing.
     lifted = None
     lift_target = list(wrist_target + np.array([0, 0, LIFT_HEIGHT]))
-    lift = solve_ik(node.chain, lift_target, target_rotation=rot)
+    here = arm_now(node)
+    lift = solve_ik(node.chain, lift_target, target_rotation=rot, current=here)
+    if lift is not None and joint_jump(lift[0], here) > COARSE_MOVE_MAX_JUMP:
+        print(f"  lift REFUSED: it needs a {joint_jump(lift[0], here):.2f} rad joint "
+              f"swing, which would fling the apple")
+        lift = None
     if lift is None:
         print("  lift target UNREACHABLE -- cannot test the hold")
     else:
@@ -1102,8 +1191,10 @@ def main():
         if not r.get("ok"):
             nm = f"thumb roll {CASES[i][3]:+.2f}"
             why = ("SKIPPED" if r.get("unsettled")
-                   else "DEAD SIM" if r.get("dead_sim") else "UNREACHABLE")
-            print(f"{nm:>22} {why:>9}")
+                   else "DEAD SIM" if r.get("dead_sim")
+                   else "KNOCKED" if r.get("knocked") else "UNREACHABLE")
+            extra = f"  by {r['knocked_by']}" if r.get("knocked") else ""
+            print(f"{nm:>22} {why:>9}{extra}")
             continue
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
@@ -1122,18 +1213,15 @@ def main():
 
     best = max((r for r in results if r.get("ok")),
                key=lambda r: (r["contacts"], max(r["peak"].values())), default=None)
-    if best and best["contacts"] >= 3:
-        print(f"\nGRIP: {best['contacts']}/5 fingers at depth offset "
-              f"{best['preshape']:.2f}. This is a working grasp configuration.")
-    elif best and best["contacts"] > 0:
-        print(f"\nPartial: best was {best['contacts']}/5 at depth offset "
-              f"{best['preshape']:.2f}. Worth sweeping finer around it.")
-    else:
-        print("\nStill no contact anywhere in the pocket. Since the hand demonstrably "
-              "reaches the apple (it moves), and cannot pinch it (closed span 9.11cm vs "
-              "an 8.00cm apple), the remaining options are making the apple bigger than "
-              "the closed span, or holding it against the palm/table rather than in "
-              "free space.")
+    # Contact is not a grasp. This used to announce "GRIP: 5/5 fingers ... This is a
+    # working grasp configuration" on runs where nothing was lifted, which overstated
+    # every one of them. Only a lift that passes the hold checks counts.
+    if best and not held and best["contacts"] > 0:
+        print(f"\nBest contact: {best['contacts']}/5 fingers -- contact only. The apple "
+              f"was not lifted, so this is NOT a working grasp yet.")
+    elif not held:
+        print("\nNo finger reached the apple in any attempt. The '!! apple moved ... "
+              "during:' lines above name the arm move that knocked it away.")
 
     node.destroy_node()
     rclpy.shutdown()

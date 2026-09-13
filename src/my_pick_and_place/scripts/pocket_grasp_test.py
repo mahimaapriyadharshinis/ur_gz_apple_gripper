@@ -152,17 +152,15 @@ THUMB_ROLL = THUMB_GRASP_ROLL
 REC = {}
 
 CASES = [
-    # (palm_tilt, preshape, lateral, approach method, grasp lowered by, cap thumb preload)
+    # (tilt, preshape, lateral, method, lowered, thumb cap, empty-hand control)
     #
-    # Unchanged: this exact configuration produced the second complete pick of the
-    # project (+8.5cm, held) and lifts of +6.4, +3.9, +3.9cm -- the best run so far. The
-    # only change is that the lift is now watched to the end, with the arm's joint
-    # efforts, because the first watch found the hand had risen only 12-19mm after 6s
-    # of a lift commanded to take 3s.
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
+    # Grasp configuration unchanged. Alternates with an empty-hand control -- same approach,
+    # apple removed before closing -- to find out whether the arm stalls because it is
+    # holding the apple or stalls at this pose regardless.
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, True),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -358,7 +356,14 @@ LIFT_SAMPLE_S = 0.2
 # the hand has stopped rising, up to this long.
 LIFT_WATCH_S = 25.0
 LIFT_STILL_S = 2.0          # hand counted as stopped after rising <2mm over this long
-SLIP_MM = 5.0
+# 15mm, not 5mm. As the lift starts the apple settles a few millimetres down into the
+# cradle of the fingers and then rises with the hand at that offset: the one picked apple
+# in the last run sat a steady 6mm behind the hand from 1.4s to 25s and rose 11.3cm. At 5mm
+# that settling was reported as a slip.
+SLIP_MM = 15.0
+# The apple counts as having stayed in the hand for the whole lift if it ends no more than
+# this far behind it.
+FOLLOW_MM = 15.0
 # The UR5e's declared joint effort limits; a joint at >=98% of its limit is saturated.
 ARM_EFFORT_LIMIT = {'shoulder_pan_joint': 150.0, 'shoulder_lift_joint': 150.0,
                     'elbow_joint': 150.0, 'wrist_1_joint': 28.0, 'wrist_2_joint': 28.0,
@@ -941,7 +946,7 @@ def apple_xyz(node):
 
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
-            cap_thumb=False):
+            cap_thumb=False, empty=False):
     global THUMB_ROLL
     THUMB_ROLL = THUMB_GRASP_ROLL
     palm_offset = PALM_OFFSET
@@ -952,7 +957,9 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     global CAP_THUMB
     CAP_THUMB = cap_thumb
     REC["cap"] = "on" if cap_thumb else "off"
-    label = (f"thumb cap {'ON' if cap_thumb else 'off'}   grasp lowered {drop * 1000:.0f}mm   "
+    REC["empty"] = empty
+    label = (f"{'EMPTY-HAND CONTROL' if empty else 'GRASP'}   "
+             f"thumb cap {'ON' if cap_thumb else 'off'}   grasp lowered {drop * 1000:.0f}mm   "
              f"pre-shape {preshape:.1f}")
     print(f"\n{'=' * 72}\n{label}\n{'=' * 72}")
     rot = tilted_palm_rotation(palm_tilt)
@@ -1350,6 +1357,17 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             print("    -> the apple is being knocked by the arm/hand body, not the "
                   "fingers; closing never gets a chance")
 
+    if empty:
+        # Control: exactly the same approach and grasp pose, but with the apple taken
+        # away, so the lift that follows carries no apple. In two grasped attempts the
+        # apple stayed within 5mm of the hand for the whole lift, yet the arm stopped
+        # after 2.3-2.4cm with wrist_1 pinned at its 28Nm limit; an attempt that held
+        # nothing lifted 14.4cm with wrist_1 at 9Nm. The apple's weight adds under 2Nm
+        # at the wrist, so weight does not explain it -- this separates "holding an apple
+        # stalls the arm" from "this arm stalls at this pose anyway".
+        wx_, wy_ = APPLE_HOME_WORLD_XY[target_name]
+        node.teleport_model(target_name, wx_, wy_ + 0.9, 0.06, settle_sec=1.0)
+        print("  CONTROL: apple moved off the table -- the hand will close and lift empty")
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_now,
         radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW)
@@ -1455,11 +1473,13 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             final = trace[-1]
             REC["hand_rise"] = final[1] / 1000.0
             REC["lift_time"] = final[0]
+            REC["final_lag"] = final[3] / 1000.0
             print(f"  hand rose {final[1]:.0f}mm of the commanded {LIFT_HEIGHT * 1000:.0f}mm "
                   f"in {final[0]:.1f}s (commanded to take 3.0s)")
         saturated = [jn for jn in ARM_JOINTS
                      if arm_peak[jn] >= 0.98 * ARM_EFFORT_LIMIT[jn]]
         REC["shoulder_peak"] = arm_peak['shoulder_lift_joint']
+        REC["wrist1_peak"] = arm_peak['wrist_1_joint']
         REC["arm_saturated"] = ", ".join(jn.replace("_joint", "") for jn in saturated)
         print("  arm joint peak effort during the lift: "
               + ", ".join(f"{jn.replace('_joint', '')}={arm_peak[jn]:.0f}Nm"
@@ -1546,8 +1566,8 @@ def main():
 
     results = []
     records = []
-    for pt, ps, lat, po, dr, cap in CASES:
-        r = attempt(node, target_name, pt, ps, lat, po, dr, cap)
+    for pt, ps, lat, po, dr, cap, emp in CASES:
+        r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp)
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -1570,8 +1590,25 @@ def main():
             result, why = "HELD BACK", r["reason"]
         elif not r.get("ok"):
             result, why = "UNREACHABLE", "the arm cannot reach the target"
+        elif rec.get("empty"):
+            hr, w1 = rec.get("hand_rise"), rec.get("wrist1_peak")
+            result = "CONTROL"
+            why = (f"empty hand rose {'-' if hr is None else f'{hr * 100:.1f}cm'} in "
+                   f"{rec.get('lift_time', 0):.1f}s, wrist_1 peak "
+                   f"{'-' if w1 is None else f'{w1:.0f}Nm'} (limit 28Nm)")
         elif r.get("lifted") is not None:
             result, why = "PICKED", f"apple held through the {LIFT_HEIGHT:.2f}m lift"
+        elif (rec.get("final_lag") is not None and rec.get("contacts")
+              and rec["final_lag"] * 1000.0 <= FOLLOW_MM
+              and (rec.get("hand_rise") or 0.0) < LIFT_HEIGHT * 0.5):
+            # The apple stayed in the hand, but the hand did not go up far enough. This
+            # used to be reported as NOT HELD, blaming the grasp for the arm's failure.
+            w1 = rec.get("wrist1_peak")
+            result = "ARM STALLED"
+            why = (f"the apple stayed in the hand the whole lift (ended "
+                   f"{rec['final_lag'] * 1000:.0f}mm behind it), but the arm stopped after "
+                   f"raising it {rec['hand_rise'] * 100:.1f}cm; wrist_1 peak "
+                   f"{'-' if w1 is None else f'{w1:.0f}Nm'} (limit 28Nm)")
         else:
             touched = rec.get("contacts")
             gripping = rec.get("holding")
@@ -1602,12 +1639,14 @@ def main():
 
     print("\n2) THE GRASP AND THE LIFT (only filled in when the hand reached the apple)")
     print(f"{'#':>2}  {'touched':>7}  {'under widest':>12}  {'hand rose':>9}  "
-          f"{'took':>6}  {'shoulder':>8}  {'slips after':>11}  {'apple rose':>10}  {'RESULT':<10}")
+          f"{'took':>6}  {'shoulder':>8}  {'wrist_1':>7}  {'slips after':>11}  "
+          f"{'apple rose':>10}  {'RESULT':<11}")
     for idx, rec, result, why in rows:
         touched = rec.get("contacts")
         hr = rec.get("hand_rise")
         lt = rec.get("lift_time")
         sp = rec.get("shoulder_peak")
+        w1 = rec.get("wrist1_peak")
         sl = rec.get("slip_at")
         lift = rec.get("lift")
         slip_txt = ("-" if touched is None
@@ -1617,8 +1656,9 @@ def main():
               f"{('-' if hr is None else f'{hr * 100:.1f}cm'):>9}  "
               f"{('-' if lt is None else f'{lt:.1f}s'):>6}  "
               f"{('-' if sp is None else f'{sp:.0f}Nm'):>8}  "
+              f"{('-' if w1 is None else f'{w1:.0f}Nm'):>7}  "
               f"{slip_txt:>11}  "
-              f"{('-' if lift is None else f'{lift * 100:+.1f}cm'):>10}  {result:<10}")
+              f"{('-' if lift is None else f'{lift * 100:+.1f}cm'):>10}  {result:<11}")
 
     print("\nWHAT HAPPENED IN EACH ATTEMPT")
     for idx, rec, result, why in rows:
@@ -1629,8 +1669,11 @@ def main():
           f"{THUMB_PRELOAD_FORCE:.1f}Nm")
     print(f"  hand rose / took -- how far the hand actually rose, and how long it took "
           f"(commanded: {LIFT_HEIGHT * 100:.0f}cm in 3.0s)")
-    print("  shoulder         -- peak effort on the shoulder-lift joint during the lift "
-          "(limit 150Nm)")
+    print("  shoulder/wrist_1 -- peak effort on those arm joints during the lift "
+          "(limits 150Nm and 28Nm)")
+    print("  ARM STALLED      -- the apple stayed in the hand, but the arm stopped lifting")
+    print("  CONTROL          -- same attempt with the apple removed, to see if the arm "
+          "stalls anyway")
     print("  slips after      -- how far the hand had risen when the apple started falling "
           f"behind it by {SLIP_MM:.0f}mm")
     print("  apple still      -- the apple was resting still before the attempt began")
@@ -1648,12 +1691,22 @@ def main():
 
     picked = sum(1 for _, _, result, _ in rows if result == "PICKED")
     print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS.")
-    lifts = [rec["lift"] for _, rec, _, _ in rows if rec.get("lift") is not None]
+    lifts = [rec["lift"] for _, rec, _, _ in rows
+             if rec.get("lift") is not None and not rec.get("empty")]
     if lifts:
-        print(f"  identical attempts lifted {', '.join(f'{x * 100:+.1f}cm' for x in lifts)} "
+        print(f"  grasp attempts lifted {', '.join(f'{x * 100:+.1f}cm' for x in lifts)} "
               f"-- a spread of {(max(lifts) - min(lifts)) * 100:.1f}cm")
+    for label_, want in (("grasps holding the apple", False), ("empty-hand controls", True)):
+        grp = [rec for _, rec, _, _ in rows
+               if bool(rec.get("empty")) == want and rec.get("hand_rise") is not None
+               and (want or (rec.get("final_lag") is not None
+                             and rec["final_lag"] * 1000.0 <= FOLLOW_MM))]
+        if grp:
+            rises = ", ".join("%.1fcm" % (r_["hand_rise"] * 100) for r_ in grp)
+            wrists = ", ".join("%.0fNm" % r_.get("wrist1_peak", 0.0) for r_ in grp)
+            print(f"  {label_}: hand rose {rises}, wrist_1 peak {wrists}")
     for _, rec, _, _ in sorted(rows, key=lambda r: -(r[1].get("lift") or -9)):
-        if rec.get("lift") is None:
+        if rec.get("lift") is None or rec.get("empty"):
             continue
         hr, lt, sl = rec.get("hand_rise"), rec.get("lift_time"), rec.get("slip_at")
         print(f"    apple rose {rec['lift'] * 100:+.1f}cm: hand rose "

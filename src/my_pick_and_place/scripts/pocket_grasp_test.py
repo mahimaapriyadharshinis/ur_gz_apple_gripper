@@ -151,16 +151,22 @@ THUMB_ROLL = THUMB_GRASP_ROLL
 # run can be read at a glance instead of reconstructed from hundreds of log lines.
 REC = {}
 
+# The finger command in force when closing finished, so the thumb can be eased off before
+# lifting without disturbing the fingers.
+LAST_FINGER_CMD = {}
+
 CASES = [
-    # (tilt, preshape, lateral, method, lowered, thumb cap, empty-hand control)
+    # (tilt, preshape, lateral, method, lowered, thumb cap, empty control, ease thumb before lift)
     #
-    # Grasp configuration unchanged. Alternates with an empty-hand control -- same approach,
-    # apple removed before closing -- to find out whether the arm stalls because it is
-    # holding the apple or stalls at this pose regardless.
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, True),
+    # The empty-hand controls answered their question: from the same pose the arm lifted
+    # the empty hand 15.0 and 15.7cm with wrist_1 at 7Nm, while both grasps drove wrist_1 to
+    # its 28Nm limit. So holding the apple is what loads the wrist, by far more than the
+    # apple weighs. This tests whether the thumb's squeeze is the source: half the grasps
+    # ease the thumb to 3Nm before lifting. Alternated.
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -364,6 +370,19 @@ SLIP_MM = 15.0
 # The apple counts as having stayed in the hand for the whole lift if it ends no more than
 # this far behind it.
 FOLLOW_MM = 15.0
+
+# Thumb load to ease down to before lifting, when RELAX is on for the attempt.
+#
+# With the apple held, wrist_1 reached its 28Nm limit in every grasp; lifting the empty hand
+# from the same pose it needed 7Nm. The apple's weight can add at most 2.6Nm there (0.544kg
+# on a 0.48m lever at the very most), so at least 18Nm is coming from something else about
+# holding it. The largest force in the grasp is the thumb: 6.5-10Nm at lift start, peaking
+# at 22-23Nm. In a contact simulation, squeezing an object that hard can produce contact
+# forces that load the wrist. 3Nm is what the thumb settled to while the one full lift held
+# the apple (3.15Nm from 5s to 25s), so the grip is not expected to need more.
+THUMB_LIFT_NM = 3.0
+THUMB_RELAX_STEP = 0.004
+THUMB_RELAX_MAX = 0.20
 # The UR5e's declared joint effort limits; a joint at >=98% of its limit is saturated.
 ARM_EFFORT_LIMIT = {'shoulder_pan_joint': 150.0, 'shoulder_lift_joint': 150.0,
                     'elbow_joint': 150.0, 'wrist_1_joint': 28.0, 'wrist_2_joint': 28.0,
@@ -925,6 +944,8 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
               + ("" if below else
                  "  <-- every contact is on the TOP half: squeezing drives the apple "
                  "down and out, and nothing holds it up during the lift"))
+    LAST_FINGER_CMD.clear()
+    LAST_FINGER_CMD.update(current)
     return contacted, peak
 
 
@@ -946,7 +967,7 @@ def apple_xyz(node):
 
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
-            cap_thumb=False, empty=False):
+            cap_thumb=False, empty=False, relax=False):
     global THUMB_ROLL
     THUMB_ROLL = THUMB_GRASP_ROLL
     palm_offset = PALM_OFFSET
@@ -958,7 +979,9 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     CAP_THUMB = cap_thumb
     REC["cap"] = "on" if cap_thumb else "off"
     REC["empty"] = empty
+    REC["relax"] = "on" if relax else "off"
     label = (f"{'EMPTY-HAND CONTROL' if empty else 'GRASP'}   "
+             f"thumb eased before lift: {'ON' if relax else 'off'}   "
              f"thumb cap {'ON' if cap_thumb else 'off'}   grasp lowered {drop * 1000:.0f}mm   "
              f"pre-shape {preshape:.1f}")
     print(f"\n{'=' * 72}\n{label}\n{'=' * 72}")
@@ -1411,6 +1434,22 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     if lift is None:
         print("  lift target UNREACHABLE -- cannot test the hold")
     else:
+        if relax and LAST_FINGER_CMD:
+            _, _, teff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
+            before_relax = abs(teff or 0.0)
+            eased = 0.0
+            while (abs(teff or 0.0) > THUMB_LIFT_NM and eased < THUMB_RELAX_MAX):
+                eased += THUMB_RELAX_STEP
+                LAST_FINGER_CMD["R_Thumb"] = max(LAST_FINGER_CMD["R_Thumb"] - THUMB_RELAX_STEP,
+                                                 0.0)
+                node.command_fingers(LAST_FINGER_CMD, STEP_COMMAND_TIME,
+                                     thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_ROLL)
+                for _ in range(CHECKS_PER_STEP):
+                    rclpy.spin_once(node, timeout_sec=0.08)
+                _, _, teff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
+            REC["thumb_eased_from"] = before_relax
+            print(f"  eased the thumb from {before_relax:.2f}Nm to {abs(teff or 0.0):.2f}Nm "
+                  f"({eased:.3f} rad) before lifting")
         print(f"  lifting {LIFT_HEIGHT:.2f}m...")
         # Watch the lift itself. Seven attempts with near-identical grasp geometry --
         # fingers 9-12mm below the apple's middle, thumb 12-15mm above -- lifted it
@@ -1566,8 +1605,8 @@ def main():
 
     results = []
     records = []
-    for pt, ps, lat, po, dr, cap, emp in CASES:
-        r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp)
+    for pt, ps, lat, po, dr, cap, emp, rel in CASES:
+        r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel)
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -1629,10 +1668,10 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'thumb cap':>9}  {'apple still':>11}  {'1st move off':>12}  "
+    print(f"{'#':>2}  {'ease thumb':>10}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
-        print(f"{idx:>2}  {rec.get('cap', '-'):>9}  "
+        print(f"{idx:>2}  {rec.get('relax', '-'):>10}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")
@@ -1665,6 +1704,7 @@ def main():
         print(f"  {idx}. [thumb cap {rec.get('cap', '-')}] {result}: {why}")
 
     print("\nHOW TO READ THIS")
+    print(f"  ease thumb       -- on: thumb eased to {THUMB_LIFT_NM:.0f}Nm just before lifting")
     print("  thumb cap        -- on: the thumb is backed off until it pushes no more than "
           f"{THUMB_PRELOAD_FORCE:.1f}Nm")
     print(f"  hand rose / took -- how far the hand actually rose, and how long it took "
@@ -1696,15 +1736,16 @@ def main():
     if lifts:
         print(f"  grasp attempts lifted {', '.join(f'{x * 100:+.1f}cm' for x in lifts)} "
               f"-- a spread of {(max(lifts) - min(lifts)) * 100:.1f}cm")
-    for label_, want in (("grasps holding the apple", False), ("empty-hand controls", True)):
+    for setting in ("on", "off"):
         grp = [rec for _, rec, _, _ in rows
-               if bool(rec.get("empty")) == want and rec.get("hand_rise") is not None
-               and (want or (rec.get("final_lag") is not None
-                             and rec["final_lag"] * 1000.0 <= FOLLOW_MM))]
+               if not rec.get("empty") and rec.get("relax") == setting
+               and rec.get("hand_rise") is not None]
         if grp:
             rises = ", ".join("%.1fcm" % (r_["hand_rise"] * 100) for r_ in grp)
             wrists = ", ".join("%.0fNm" % r_.get("wrist1_peak", 0.0) for r_ in grp)
-            print(f"  {label_}: hand rose {rises}, wrist_1 peak {wrists}")
+            apples = ", ".join("%+.1fcm" % (r_.get("lift", 0.0) * 100) for r_ in grp)
+            print(f"  thumb eased {setting:>3}: wrist_1 peak {wrists}; hand rose {rises}; "
+                  f"apple rose {apples}")
     for _, rec, _, _ in sorted(rows, key=lambda r: -(r[1].get("lift") or -9)):
         if rec.get("lift") is None or rec.get("empty"):
             continue

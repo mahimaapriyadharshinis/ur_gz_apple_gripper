@@ -154,20 +154,19 @@ REC = {}
 CASES = [
     # (palm_tilt, preshape, lateral, approach method, grasp lowered by, cap thumb preload)
     #
-    # Lowering the grasp did what it was aimed at -- all four attempts met the apple with
-    # 4/5 fingers below its equator, against 4, 1, 1 and 0 the run before -- and the lift
-    # got WORSE (3.7, 2.0, 1.8, 1.8cm against 5.9, 4.3, 2.0, -0.2). So contact height
-    # alone does not decide the lift; that conclusion was wrong.
+    # Four identical attempts. The last three runs changed one thing per run on four
+    # attempts each, and each change looked like it helped or hurt; but attempts with
+    # near-identical grasp geometry lifted the apple anywhere from +1.6cm to +8.5cm. With
+    # that much spread, two-against-two comparisons cannot separate a real effect from
+    # chance -- which is why three explanations in a row failed. Nothing changes here but
+    # the measurement: the lift is now watched.
     #
-    # What separates them across seven attempts is whether the four fingers are still
-    # loaded after the squeeze, and that tracks how hard the thumb pushes: 5.5-6.2Nm, the
-    # fingers held in two of three (lifts 5.9 and 4.3cm); 8.8-13.3Nm, they lost their load
-    # in all four (1.8-3.7cm). The thumb's preload cap is 1.2Nm and is not enforced. This
-    # tests enforcing it, alternated with the uncapped control, grasp lowered 8mm in both.
+    # Thumb cap stays on: it is the specified behaviour. It did not change the thumb's
+    # force during the grasp (12-23Nm peaks either way), so it is not being credited.
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, False),
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, False),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -353,6 +352,12 @@ CAP_THUMB = False
 # across all three joints; genuinely loaded fingers read 0.87-1.50Nm. The contact
 # threshold (~0.07Nm) sits inside that idle band, so it overstated gripping.
 GRIP_HOLD_NM = 0.30
+
+# During the lift, how often to sample, for how long, and how far the apple must fall
+# behind the hand before it counts as slipping.
+LIFT_SAMPLE_S = 0.2
+LIFT_WATCH_S = 6.0
+SLIP_MM = 5.0
 
 # How far above free-air closing noise a reading must be to count as real contact.
 CONTACT_MARGIN = 2.0
@@ -913,6 +918,16 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     return contacted, peak
 
 
+def finger_loads(node):
+    """Strongest of each finger's three joint efforts (Pitch, Flexor, DIP), in Nm."""
+    out = {}
+    for g in FINGER_GROUPS:
+        joints = [f"{g}_Pitch"] + list(FINGER_SECONDARY_JOINTS.get(g, []))
+        out[g] = max(abs(node.latest_joint_state.get(j, (0, 0, 0))[2] or 0.0)
+                     for j in joints)
+    return out
+
+
 def apple_xyz(node):
     if node.target_pose is None:
         return None
@@ -1374,8 +1389,59 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         print("  lift target UNREACHABLE -- cannot test the hold")
     else:
         print(f"  lifting {LIFT_HEIGHT:.2f}m...")
+        # Watch the lift itself. Seven attempts with near-identical grasp geometry --
+        # fingers 9-12mm below the apple's middle, thumb 12-15mm above -- lifted it
+        # anywhere from +1.6cm to +8.5cm, so nothing measured before the lift decides
+        # the outcome; it is decided during the lift, where nothing was measured. Record
+        # how far the hand and the apple have each risen, which fingers are still loaded,
+        # and the moment the apple starts falling behind the hand.
+        for _ in range(5):
+            rclpy.spin_once(node, timeout_sec=0.05)
+        w0 = node.real_wrist_position()
+        a0 = apple_xyz(node)
+        loads0 = finger_loads(node)
+        REC["fingers_at_lift"] = sum(1 for g in FINGER_GROUPS
+                                     if g != "R_Thumb" and loads0[g] > GRIP_HOLD_NM)
+        REC["thumb_at_lift"] = loads0["R_Thumb"]
+        print("  at lift start, load (strongest joint): "
+              + ", ".join(f"{g.replace('R_', '')}={loads0[g]:.2f}" for g in FINGER_GROUPS))
         node.send_arm_trajectory(lift[0], 3.0)
+        trace = []
+        slip_at = None
+        t_start = time.time()
+        while time.time() - t_start < LIFT_WATCH_S and w0 is not None and a0 is not None:
+            for _ in range(2):
+                rclpy.spin_once(node, timeout_sec=LIFT_SAMPLE_S / 2)
+            w = node.real_wrist_position()
+            a = apple_xyz(node)
+            if w is None or a is None:
+                continue
+            hand_rise = (w[2] - w0[2]) * 1000.0
+            apple_rise = (a[2] - a0[2]) * 1000.0
+            lagging = hand_rise - apple_rise
+            loads = finger_loads(node)
+            n_loaded = sum(1 for g in FINGER_GROUPS
+                           if g != "R_Thumb" and loads[g] > GRIP_HOLD_NM)
+            trace.append((time.time() - t_start, hand_rise, apple_rise, lagging,
+                          n_loaded, loads["R_Thumb"]))
+            if slip_at is None and lagging > SLIP_MM:
+                slip_at = (hand_rise, n_loaded, loads["R_Thumb"])
         settle(node, 15.0)
+        if trace:
+            print("    time   hand up  apple up  apple behind  fingers loaded  thumb")
+            step = max(1, len(trace) // 10)
+            for t_, h_, a_, lag_, nl_, th_ in trace[::step]:
+                print(f"    {t_:4.1f}s  {h_:+6.0f}mm  {a_:+6.0f}mm  {lag_:+8.0f}mm  "
+                      f"{nl_:>10}/4  {th_:5.2f}Nm")
+        if slip_at is not None:
+            REC["slip_at"] = slip_at[0] / 1000.0
+            REC["fingers_at_slip"] = slip_at[1]
+            print(f"  the apple started falling behind the hand when the hand had risen "
+                  f"{slip_at[0]:.0f}mm, with {slip_at[1]}/4 fingers and the thumb at "
+                  f"{slip_at[2]:.2f}Nm")
+        else:
+            print("  the apple never fell more than "
+                  f"{SLIP_MM:.0f}mm behind the hand during the watched lift")
         for _ in range(10):
             rclpy.spin_once(node, timeout_sec=0.1)
         after_lift = apple_xyz(node)
@@ -1503,21 +1569,22 @@ def main():
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")
 
-    print("\n2) THE GRASP ITSELF (only filled in when the hand reached the apple)")
-    print(f"{'#':>2}  {'thumb cap':>9}  {'thumb push':>10}  {'touched':>7}  {'under widest':>12}  "
-          f"{'gripping':>8}  {'thumb vs fingers':>16}  {'lift':>8}  {'RESULT':<10}")
+    print("\n2) THE GRASP AND THE LIFT (only filled in when the hand reached the apple)")
+    print(f"{'#':>2}  {'touched':>7}  {'under widest':>12}  {'fingers@lift':>12}  "
+          f"{'thumb@lift':>10}  {'slips after':>11}  {'lift':>8}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
         touched = rec.get("contacts")
-        gripping = rec.get("holding")
-        opp = rec.get("opposition")
+        fl = rec.get("fingers_at_lift")
+        tl = rec.get("thumb_at_lift")
+        sl = rec.get("slip_at")
         lift = rec.get("lift")
-        push = rec.get("thumb_push")
-        print(f"{idx:>2}  {rec.get('cap', '-'):>9}  "
-              f"{('-' if push is None else f'{push:.1f}Nm'):>10}  "
-              f"{('-' if touched is None else f'{touched}/5'):>7}  "
+        slip_txt = ("-" if touched is None
+                    else "never" if sl is None else f"{sl * 100:.1f}cm up")
+        print(f"{idx:>2}  {('-' if touched is None else f'{touched}/5'):>7}  "
               f"{rec.get('below', '-'):>12}  "
-              f"{('-' if gripping is None else f'{gripping}/5'):>8}  "
-              f"{('-' if opp is None else f'{opp:.0f}deg'):>16}  "
+              f"{('-' if fl is None else f'{fl}/4'):>12}  "
+              f"{('-' if tl is None else f'{tl:.1f}Nm'):>10}  "
+              f"{slip_txt:>11}  "
               f"{('-' if lift is None else f'{lift * 100:+.1f}cm'):>8}  {result:<10}")
 
     print("\nWHAT HAPPENED IN EACH ATTEMPT")
@@ -1527,7 +1594,11 @@ def main():
     print("\nHOW TO READ THIS")
     print("  thumb cap        -- on: the thumb is backed off until it pushes no more than "
           f"{THUMB_PRELOAD_FORCE:.1f}Nm")
-    print("  thumb push       -- how hard the thumb pressed before the fingers closed")
+    print(f"  fingers@lift     -- of the four fingers, how many press above {GRIP_HOLD_NM:.1f}Nm "
+          "as the lift starts")
+    print("  thumb@lift       -- how hard the thumb presses as the lift starts")
+    print("  slips after      -- how far the hand had risen when the apple started falling "
+          f"behind it by {SLIP_MM:.0f}mm")
     print("  apple still      -- the apple was resting still before the attempt began")
     print(f"  1st move off     -- how far the first rough move missed (normal: 50-90mm)")
     print("  after fixing     -- how far off after correction. pick: from the grasp pose "
@@ -1538,27 +1609,21 @@ def main():
     print("  apple moved      -- how far the apple moved during the whole attempt")
     print("  under widest     -- fingers that met the apple BELOW its middle "
           "(needed to lift it)")
-    print("  gripping         -- fingers still pressing on the apple after the squeeze "
-          f"(strongest of 3 joints above {GRIP_HOLD_NM:.1f}Nm)")
-    print("  thumb vs fingers -- 180deg means thumb directly across from the fingers")
     print(f"  lift             -- how far the apple rose; +{LIFT_HEIGHT * 50:.1f}cm or "
           f"more counts as held")
 
     picked = sum(1 for _, _, result, _ in rows if result == "PICKED")
     print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS.")
-    for c in ("on", "off"):
-        mine = [(rec, result) for _, rec, result, _ in rows if rec.get("cap") == c]
-        if not mine:
-            continue
-        pushes = [rec["thumb_push"] for rec, _ in mine if rec.get("thumb_push") is not None]
-        grips = [rec["holding"] for rec, _ in mine if rec.get("holding") is not None]
-        lifts = [rec["lift"] for rec, _ in mine if rec.get("lift") is not None]
-        got = sum(1 for _, result in mine if result == "PICKED")
-        print(f"  thumb cap {c:>3}: thumb push "
-              f"{', '.join(f'{x:.1f}Nm' for x in pushes) or '-'}, fingers gripping "
-              f"{', '.join(f'{g}/5' for g in grips) or '-'}, lifts "
-              f"{', '.join(f'{x * 100:+.1f}cm' for x in lifts) or '-'}, "
-              f"picked {got}/{len(mine)}")
+    lifts = [rec["lift"] for _, rec, _, _ in rows if rec.get("lift") is not None]
+    if lifts:
+        print(f"  identical attempts lifted {', '.join(f'{x * 100:+.1f}cm' for x in lifts)} "
+              f"-- a spread of {(max(lifts) - min(lifts)) * 100:.1f}cm")
+    slips = [(rec.get("fingers_at_lift"), rec.get("slip_at"), rec.get("lift"))
+             for _, rec, _, _ in rows if rec.get("lift") is not None]
+    for fl, sl, lf in sorted(slips, key=lambda x: -(x[2] or 0)):
+        print(f"    lift {lf * 100:+.1f}cm: {('-' if fl is None else fl)}/4 fingers loaded at "
+              f"the start, slipped "
+              f"{'never' if sl is None else f'after {sl * 100:.1f}cm of hand rise'}")
 
     node.destroy_node()
     rclpy.shutdown()

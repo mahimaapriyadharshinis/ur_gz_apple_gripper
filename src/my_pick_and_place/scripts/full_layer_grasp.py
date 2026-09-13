@@ -867,17 +867,22 @@ class FullLayerGraspNode(Node):
             drifts = [float(np.linalg.norm(positions[i + 1] - positions[i]))
                       for i in range(len(positions) - 1)]
             drift = max(drifts)
+            # Also judge the WHOLE window, first sample to last. Allowing 2mm between
+            # samples half a second apart let an apple rolling at up to 4mm/s pass as
+            # settled -- one reset reported "settled, drift 0.0020m", right at that limit
+            # -- and over a one-minute approach that is centimetres of travel.
+            window = float(np.linalg.norm(positions[-1] - positions[0]))
             off_target = float(np.linalg.norm(
                 positions[-1] - np.array([hx, hy, target_z])))
-            if drift < 0.002 and off_target < 0.010:
+            if drift < 0.002 and window < 0.0015 and off_target < 0.010:
                 if attempt_i:
                     self.get_logger().info(
                         f"[Apple reset] {target_name} settled after {attempt_i + 1} "
                         f"teleports (drift {drift:.4f}m)")
                 return True
             self.get_logger().warn(
-                f"[Apple reset] {target_name} not settled (worst drift {drift:.4f}m "
-                f"across {SETTLE_SAMPLES} samples, {off_target:.4f}m off target) "
+                f"[Apple reset] {target_name} not settled (worst drift {drift:.4f}m, "
+                f"{window:.4f}m across the whole window, {off_target:.4f}m off target) "
                 f"-- re-teleporting.")
             if attempt_i == 1:
                 # Two failed teleports means it is carrying real momentum that

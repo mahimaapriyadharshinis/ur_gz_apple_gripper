@@ -150,16 +150,17 @@ THUMB_ROLL = THUMB_GRASP_ROLL
 CASES = [
     # (palm_tilt, preshape, lateral, thumb_roll)
     #
-    # Four identical attempts at the configuration that produced the pick -- tilt 45deg,
-    # back-off 0.090, lateral +15mm, pre-shape 0.4, squeeze 0.12, thumb roll 0.0 -- now
-    # with an approach that refuses to go near the apple unless the hand is measurably in
-    # place. The thumb-roll sweep is paused: no attempt in the last run reached the apple
-    # in position, so it told us nothing about the thumb, and varying it now would only
-    # hide whether the approach itself is fixed.
-    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
-    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
-    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
-    (PALM_TILT, PRESHAPE, LATERAL, 0.00),
+    # Pre-shape is how far the fingers are already curled on the way in (0 = fully open,
+    # 1 = closed). Measured, the hand spans ~15.4cm fully open and 9.2cm at 1.0, so at the
+    # 0.4 used by the pick it spans roughly 13cm around an 11.1cm apple -- about 9mm to
+    # spare on each side, which is no more than the 4-12mm the wrist is typically off by.
+    # That is too little margin, and it matches what was seen in the viewer: the fingers
+    # not open enough to take the apple. 0.2 spans roughly 14cm, about 15mm each side.
+    # 0.4 is kept as the control because it is what produced the pick.
+    (PALM_TILT, 0.4, LATERAL, 0.00),   # control: the configuration that picked the apple
+    (PALM_TILT, 0.2, LATERAL, 0.00),   # wider opening
+    (PALM_TILT, 0.4, LATERAL, 0.00),
+    (PALM_TILT, 0.2, LATERAL, 0.00),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -208,6 +209,10 @@ COARSE_MOVE_MAX_JUMP = 1.0
 # Apple displacement between two readings that counts as the arm having hit it. A
 # settled apple drifts under 2mm.
 KNOCK_THRESHOLD = 0.010
+
+# If every fingertip is further than this from the apple's surface when it moves, the hand
+# cannot have moved it.
+HAND_CLEAR_OF_APPLE = 0.030
 
 # Below this angle between thumb and fingers (about the apple's centre) the grasp has an
 # open side, so squeezing drives the apple out rather than trapping it.
@@ -733,7 +738,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
     global THUMB_ROLL
     THUMB_ROLL = thumb_roll
     palm_offset = PALM_OFFSET
-    label = (f"thumb roll {thumb_roll:+.2f} rad, "
+    label = (f"pre-shape {preshape:.1f} (0=open, 1=closed), "
              f"preshape {preshape:.1f}")
     print(f"\n{'=' * 72}\n{label}, pre-shape {preshape:.2f}\n{'=' * 72}")
     rot = tilted_palm_rotation(palm_tilt)
@@ -854,7 +859,20 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, thumb_roll):
             d = float(np.linalg.norm(now - watch["last"]))
             if d > KNOCK_THRESHOLD:
                 watch["knocks"].append((label, d))
-                print(f"  !! apple moved {d:.3f}m during: {label}")
+                # Was any part of the hand close enough to have done it? If every
+                # fingertip was well clear, the apple moved on its own (rolled), and
+                # calling that a knock sends the investigation after the wrong thing.
+                gaps_now = fingertip_gaps(node, live_apple_local(node, apple_local),
+                                          APPLE_RADIUS.get(target_name, 0.0555))
+                near = min((v for v in gaps_now.values() if v is not None), default=None)
+                if near is not None and near > HAND_CLEAR_OF_APPLE:
+                    print(f"  !! apple moved {d:.3f}m during: {label} -- but the nearest "
+                          f"fingertip was {near * 1000:.0f}mm away, so the hand did not "
+                          f"touch it: the apple ROLLED on its own")
+                else:
+                    near_s = f"{near * 1000:.0f}mm" if near is not None else "unknown"
+                    print(f"  !! apple moved {d:.3f}m during: {label} -- nearest "
+                          f"fingertip {near_s} away")
         watch["last"] = now
         return d
 
@@ -1242,7 +1260,7 @@ def main():
     print(f"{'case':>22} {'contacts':>9} {'max_effort':>11} {'apple_moved':>12} {'lifted':>9}")
     for i, r in enumerate(results):
         if not r.get("ok"):
-            nm = f"thumb roll {CASES[i][3]:+.2f}"
+            nm = f"pre-shape {CASES[i][1]:.1f}"
             why = ("SKIPPED" if r.get("unsettled")
                    else "DEAD SIM" if r.get("dead_sim")
                    else "KNOCKED" if r.get("knocked")
@@ -1254,7 +1272,7 @@ def main():
         mx = max(r["peak"].values())
         moved = f"{r['moved']:.3f}m" if r["moved"] is not None else "n/a"
         lifted = f"{r['lifted']:+.3f}m" if r["lifted"] is not None else "n/a"
-        nm = f"thumb roll {CASES[i][3]:+.2f}"
+        nm = f"pre-shape {CASES[i][1]:.1f}"
         print(f"{nm:>22} {r['contacts']:>7}/5 {mx:11.3f} {moved:>12} {lifted:>9}")
 
     held = [r for r in results

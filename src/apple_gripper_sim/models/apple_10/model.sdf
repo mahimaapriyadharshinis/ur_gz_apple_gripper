@@ -38,6 +38,41 @@
         </surface>
       </collision>
 
+      <!-- Flat base. A perfect sphere on a flat table has a single point of contact and
+           nothing resisting a roll, so the smallest nudge, a teleport, a respawn, a
+           finger passing close, sets it rolling at constant speed. Logged directly: an
+           apple moving 0.028m, 0.028m, 0.028m, 0.028m across four consecutive arm moves,
+           and attempts abandoned because the apple had rolled 11-18mm while the hand was
+           still centimetres away. A real apple rests on a flattened base and does not do
+           this. The bottom face is flush with the sphere's lowest point, so the resting
+           height and every grasp contact (all well above -50mm from
+           the centre) are unchanged. -->
+      <collision name="flat_base">
+        <pose>0 0 -0.05500 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.0250</radius>
+            <length>0.0100</length>
+          </cylinder>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>0.82</mu>
+              <mu2>0.82</mu2>
+            </ode>
+          </friction>
+          <contact>
+            <ode>
+              <kp>130000.0</kp>
+              <kd>0.9</kd>
+              <min_depth>0.001</min_depth>
+            </ode>
+          </contact>
+        </surface>
+      </collision>
+
+
       <visual name="visual">
         <geometry>
           <mesh>

@@ -915,7 +915,10 @@ class FullLayerGraspNode(Node):
         self.get_logger().info("=== RESET: arm to natural rest pose ===")
         home = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
         self.send_arm_trajectory(home, 4.0)
-        time.sleep(4.5)
+        # Wait for the move to finish in simulated time. time.sleep(4.5) was about 0.4s
+        # of simulated time, so the next attempt's approach was sent while the arm was
+        # still next to the apple from the last one.
+        self.wait_sim_time(4.5)
 
         self.get_logger().info("=== RESET: hand fully open ===")
         self.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.0)
@@ -1226,6 +1229,30 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         with open(EXPERIENCE_LOG, "w") as f:
             json.dump(history, f, indent=2)
         self.get_logger().info(f"[Layer 7] Logged experience to {EXPERIENCE_LOG}")
+
+    def wait_sim_time(self, sim_seconds, wall_timeout=180.0):
+        """Spin until sim_seconds of SIMULATED time have passed (read from /joint_states
+        stamps). Returns the simulated seconds actually waited, or None if no stamps
+        arrived and it fell back to waiting sim_seconds of wall time.
+
+        Arm moves are commanded in simulated time, but Gazebo runs at about 8% of real
+        time on the development machine (a 3.0s lift took 3.8s simulated and 45s of wall
+        time), so a wall-clock wait of a few seconds ends long before the move does.
+        """
+        for _ in range(5):
+            rclpy.spin_once(self, timeout_sec=0.05)
+        start = getattr(self, "joint_stamp", None)
+        if start is None:
+            time.sleep(sim_seconds)
+            return None
+        t0 = time.time()
+        waited = 0.0
+        while time.time() - t0 < wall_timeout:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            waited = self.joint_stamp - start
+            if waited >= sim_seconds:
+                break
+        return waited
 
     def send_arm_trajectory(self, joint_positions, duration_sec):
         msg = JointTrajectory()

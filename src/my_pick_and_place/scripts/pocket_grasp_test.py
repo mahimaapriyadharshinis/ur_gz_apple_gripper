@@ -41,7 +41,7 @@ from full_layer_grasp import (
     PALM_DOWN_ROTATION,
     EFFORT_CONTACT_THRESHOLD, MAX_PITCH_CEILING,
     THUMB_GRASP_YAW, THUMB_GRASP_ROLL,
-    FINGERTIP_LINK, TABLE_TOP_Z,
+    FINGERTIP_LINK, TABLE_TOP_Z, FINGER_SECONDARY_JOINTS,
 )
 
 # Fingertip centroid at full closure, in the hand's own frame, measured via TF with
@@ -154,14 +154,15 @@ REC = {}
 CASES = [
     # (palm_tilt, preshape, lateral, approach method)
     #
-    # A straight comparison. "pick" is the approach that produced the one successful pick;
-    # "servo" is the new Jacobian approach. Every other setting is the pick's, and both
-    # share the flat-based apples and the stricter reset check. Alternated so neither
-    # method always runs on a fresher simulation.
+    # Side-by-side result: "pick" reached the apple 2 of 2 times (5 and 2 fingers
+    # touching, apple disturbed 10mm and 0mm); "servo" reached it 0 of 2 -- both times
+    # its error stayed at 125-127mm for all 25 correction steps, i.e. the arm did not
+    # respond at all, on top of never reaching the apple in the two runs before. The
+    # servo approach is dropped from the runs; four attempts with the one that works.
     (PALM_TILT, PRESHAPE, LATERAL, "pick"),
-    (PALM_TILT, PRESHAPE, LATERAL, "servo"),
     (PALM_TILT, PRESHAPE, LATERAL, "pick"),
-    (PALM_TILT, PRESHAPE, LATERAL, "servo"),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick"),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -223,9 +224,18 @@ APPROACH_TOL = 0.004       # per-waypoint tolerance on the final approach
 APPROACH_SERVO_ITERS = 6   # servo steps allowed per 10mm approach waypoint
 SERVO_ROT_TOL_DEG = 3.0    # palm orientation must also be this close
 
-# The approach that produced the pick, reproduced exactly for the side-by-side test.
-PICK_WRIST_TOLERANCE = 0.020
-PICK_CORRECTION_ITERS = 9
+# The approach that produced the pick, with two limits adjusted from the side-by-side run.
+#
+# Tolerance 20mm -> 12mm. One attempt landed 14mm off, which the 20mm limit accepted with
+# no correction at all -- the hand sat 10mm to the side, the four fingers started 8, 13,
+# 19 and 25mm from the apple, and only 2/5 touched it. The attempt that made one
+# correction, to 11mm, got 5/5.
+#
+# Corrections 9 -> 3. Across thirteen earlier attempts, those making 0-1 correction moves
+# next to the apple disturbed it 2-16mm (and include the one pick); those making 6-9
+# disturbed it 41-340mm and all failed. Three allows the one or two a 12mm limit needs.
+PICK_WRIST_TOLERANCE = 0.012
+PICK_CORRECTION_ITERS = 3
 
 # Apple displacement between two readings that counts as the arm having hit it. A
 # settled apple drifts under 2mm.
@@ -834,13 +844,23 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
               + ("" if moved < 0.010
                  else "  <-- the squeeze is pushing the apple out of the hand"))
 
-    holding = {g: abs(node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))[2] or 0.0)
-               for g in FINGER_GROUPS}
+    # Each finger has three joints -- Pitch at the knuckle, then Flexor and DIP -- and when
+    # a finger wraps an apple the outer two carry most of the load. Reading Pitch alone
+    # reported the four fingers of the one SUCCESSFUL pick as holding 0.02Nm each, the
+    # idle floor, while that grasp lifted the apple 8.5cm -- so "the fingers let go"
+    # conclusions drawn from that number were wrong. Take the strongest of the three.
+    def finger_load(g):
+        joints = [f"{g}_Pitch"] + list(FINGER_SECONDARY_JOINTS.get(g, []))
+        return max(abs(node.latest_joint_state.get(j, (0, 0, 0))[2] or 0.0)
+                   for j in joints)
+
+    holding = {g: finger_load(g) for g in FINGER_GROUPS}
     REC["holding"] = sum(
         1 for g in FINGER_GROUPS
         if holding[g] > CONTACT_THRESHOLD_BY_FINGER.get(g, CONTACT_THRESHOLD))
     n_sq = sum(1 for g in FINGER_GROUPS if contacted[g])
-    print(f"  after squeeze ({n_sq}/5 fingers had contact to squeeze), holding force: "
+    print(f"  after squeeze ({n_sq}/5 fingers had contact to squeeze), holding force "
+          f"(strongest of each finger's 3 joints): "
           + ", ".join("%s=%.2f" % (g, holding[g]) for g in FINGER_GROUPS))
 
     known = {g: h for g, h in contact_height.items() if h is not None}
@@ -1466,7 +1486,8 @@ def main():
     print("  nearest tip      -- closest fingertip to the apple surface before closing")
     print("  under widest     -- fingers that met the apple BELOW its middle "
           "(needed to lift it)")
-    print("  gripping         -- fingers still pressing on the apple after the squeeze")
+    print("  gripping         -- fingers still pressing on the apple after the squeeze "
+          "(strongest of each finger's 3 joints)")
     print("  thumb vs fingers -- 180deg means thumb directly across from the fingers")
     print(f"  lift             -- how far the apple rose; +{LIFT_HEIGHT * 50:.1f}cm or "
           f"more counts as held")

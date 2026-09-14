@@ -283,7 +283,7 @@ CORRECTION_GAIN = 0.6
 CORRECTION_ITERS = 9
 
 
-def sim_now(node):
+def current_sim_time(node):
     for _ in range(3):
         rclpy.spin_once(node, timeout_sec=0.05)
     return getattr(node, "joint_stamp", None)
@@ -1201,7 +1201,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         # stop a roll, which the flat base has since fixed. So it gets a fair re-test here,
         # side by side with the servo approach, instead of being judged on runs where the
         # apple would not stay still. Knocks are logged but do not abort.
-        grasp_cmd_sim = sim_now(node)
+        grasp_cmd_sim = current_sim_time(node)
         node.send_arm_trajectory(grasp[0], 3.0)
         settle(node, 20.0)
         if finish_grasp_move:

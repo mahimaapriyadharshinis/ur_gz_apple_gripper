@@ -32,7 +32,7 @@ def module_globals(table):
             or table.lookup(n).is_namespace()}
 
 
-def walk(table, globals_, path, problems):
+def walk(table, globals_, path, problems, shadowable):
     for child in table.get_children():
         name = f"{path}.{child.get_name()}" if path else child.get_name()
         if child.get_type() == "function":
@@ -40,14 +40,23 @@ def walk(table, globals_, path, problems):
                 sym = child.lookup(ident)
                 if not sym.is_referenced():
                     continue
+                # A local variable with the same name as a module-level function, class
+                # or import makes that name local for the WHOLE function, so any use of
+                # the module-level one inside it raises UnboundLocalError. This reached a
+                # live run: attempt() called the helper sim_now() and later assigned a
+                # variable called sim_now.
+                if (sym.is_local() and sym.is_assigned() and not sym.is_parameter()
+                        and ident in shadowable):
+                    problems.append((name, ident, "shadow"))
+                    continue
                 # Local, a parameter, or bound in an enclosing function: fine.
                 if sym.is_local() or sym.is_parameter() or sym.is_free():
                     continue
                 # Everything else resolves at module level or to a builtin.
                 if ident in globals_ or ident in BUILTINS:
                     continue
-                problems.append((name, ident))
-        walk(child, globals_, name, problems)
+                problems.append((name, ident, "undefined"))
+        walk(child, globals_, name, problems, shadowable)
 
 
 def check(path):
@@ -55,10 +64,16 @@ def check(path):
         src = fh.read()
     table = symtable.symtable(src, path, "exec")
     problems = []
-    walk(table, module_globals(table), "", problems)
-    for scope, ident in problems:
-        print(f"{path}: {scope}() uses '{ident}', which is not defined in that scope "
-              f"or at module level")
+    shadowable = {n for n in table.get_identifiers()
+                  if table.lookup(n).is_namespace() or table.lookup(n).is_imported()}
+    walk(table, module_globals(table), "", problems, shadowable)
+    for scope, ident, kind in problems:
+        if kind == "shadow":
+            print(f"{path}: {scope}() assigns a local variable '{ident}', which hides the "
+                  f"module-level function/import of that name inside the whole function")
+        else:
+            print(f"{path}: {scope}() uses '{ident}', which is not defined in that scope "
+                  f"or at module level")
     return not problems
 
 

@@ -896,6 +896,14 @@ class FullLayerGraspNode(Node):
         # reported it moving 1-2m, and one moved 142m. Re-teleporting until it actually
         # holds still bleeds that momentum off instead of aiming at where it used to be.
         target_z = apple_reset_z(target_name)
+        # A stalled simulation looks like an apple that will not settle, but is not one:
+        # on apple_10 six resets in a row read the apple at exactly the same spot, 142mm
+        # from where it was being put (drift 0.0000m every time), and a teleport call
+        # timed out. The pose was simply not updating. Counted separately so the caller
+        # can report a frozen simulation rather than a restless apple.
+        self.last_reset_stale = False
+        stale_count = 0
+        previous_final = None
         for attempt_i in range(6):
             self.teleport_model(target_name, hx, hy, target_z, settle_sec=1.0)
             # Sample repeatedly, not twice. Comparing a single pair of snapshots lets a
@@ -926,6 +934,20 @@ class FullLayerGraspNode(Node):
             window = float(np.linalg.norm(positions[-1] - positions[0]))
             off_target = float(np.linalg.norm(
                 positions[-1] - np.array([hx, hy, target_z])))
+            unchanged = (previous_final is not None
+                         and float(np.linalg.norm(positions[-1] - previous_final)) < 1e-6)
+            previous_final = positions[-1]
+            if unchanged and window < 1e-6 and off_target > 0.05:
+                stale_count += 1
+                if stale_count >= 2:
+                    self.last_reset_stale = True
+                    self.get_logger().error(
+                        f"[Apple reset] {target_name}'s position has not changed at all "
+                        f"across {stale_count + 1} teleports ({off_target:.3f}m from where "
+                        f"it is being put) -- the simulation has stalled. Restart Gazebo.")
+                    return False
+            else:
+                stale_count = 0
             if drift < 0.002 and window < 0.0015 and off_target < 0.010:
                 if attempt_i:
                     self.get_logger().info(

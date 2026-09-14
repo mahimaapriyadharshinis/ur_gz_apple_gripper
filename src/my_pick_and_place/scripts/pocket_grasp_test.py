@@ -476,7 +476,18 @@ def camera_clearances(node):
     return out
 
 
-def calibrate_contact_threshold(node):
+# Free-air calibration readings seen across normal runs: 0.012-0.046Nm on the fingers and
+# 0.034-0.056Nm on the thumb. Twice a run began with readings far above that (apple_07:
+# fingers 0.149-0.316; apple_08: ring 0.620), which set touch thresholds up to 1.24Nm --
+# close to the 1.5Nm a finger can push -- i.e. the hand was closing on something. A
+# reading above CALIBRATION_SANE_NM is redone once; if it is still high, the thresholds
+# fall back to the middle of those produced by normal calibrations.
+CALIBRATION_SANE_NM = 0.10
+DEFAULT_CONTACT_THRESHOLDS = {"R_Index": 0.08, "R_Middle": 0.08, "R_Ring": 0.08,
+                              "R_Pinky": 0.08, "R_Thumb": 0.10}
+
+
+def calibrate_contact_threshold(node, _retry=True):
     """Close the hand in free air and measure what a MOVING finger reads with nothing
     to touch. Returns a threshold safely above that, or None if it cannot measure.
 
@@ -485,10 +496,16 @@ def calibrate_contact_threshold(node):
     from the idle noise floor, which is a different quantity.
     """
     print("Calibrating: closing the hand in free air to measure moving-finger noise...")
+    t0 = current_sim_time(node)
     node.send_arm_trajectory(REST_POSE, 4.0)
-    settle(node, 8.0)
     node.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.5,
                          thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
+    # Wait for the move and the opening to finish in simulated time. The previous
+    # process can end with an apple still gripped after its lift, and a wall-clock wait
+    # of a few seconds is a fraction of a second of simulation, so the hand could start
+    # "calibrating" with that apple still between its fingers.
+    wait_until_sim(node, t0, 4.5)
+    settle(node, 8.0)
     for _ in range(30):
         rclpy.spin_once(node, timeout_sec=0.1)
 
@@ -532,6 +549,17 @@ def calibrate_contact_threshold(node):
     if max(peak.values(), default=0.0) <= 0.0:
         print("  could not measure -- keeping the existing threshold")
         return None
+    abnormal = [g for g in FINGER_GROUPS if peak[g] > CALIBRATION_SANE_NM]
+    if abnormal:
+        names = ", ".join(g.replace("R_", "") for g in abnormal)
+        if _retry:
+            print(f"  ABNORMAL: {names} read above {CALIBRATION_SANE_NM:.2f}Nm in free air -- "
+                  f"the hand is touching something; opening and calibrating again")
+            return calibrate_contact_threshold(node, _retry=False)
+        print(f"  ABNORMAL again: {names} -- using the normal thresholds instead: "
+              + ", ".join("%s=%.3f" % (g.replace("R_", ""), DEFAULT_CONTACT_THRESHOLDS[g])
+                          for g in FINGER_GROUPS))
+        return dict(DEFAULT_CONTACT_THRESHOLDS)
     # Per finger, not one number for all: measured, the four fingers read 0.029Nm moving
     # in free air while the thumb reads 0.053Nm. Taking the worst of the five and
     # applying it everywhere makes the fingers 2x less sensitive than they need to be,
@@ -1052,6 +1080,11 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         # arm unable to reach it at all (fingertips 495mm away, IK error 0.338m) and the
         # other threw it 3.4m off the table. Neither measured anything about the grasp.
         REC["settled"] = "no"
+        if getattr(node, "last_reset_stale", False):
+            print("  SIM FROZE: the apple's position stopped updating during the reset -- "
+                  "restart Gazebo; this attempt measured nothing.")
+            return {"ok": False, "palm_offset": palm_offset, "lateral": lateral,
+                    "palm_tilt": palm_tilt, "sim_frozen": True}
         print("  SKIPPED: the apple would not stop moving, so this attempt would "
               "measure nothing.")
         return {"ok": False, "palm_offset": palm_offset, "lateral": lateral, "palm_tilt": palm_tilt,

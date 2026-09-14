@@ -156,19 +156,23 @@ REC = {}
 LAST_FINGER_CMD = {}
 
 CASES = [
-    # (tilt, preshape, lateral, method, lowered, thumb cap, empty control, ease thumb before lift)
+    # (tilt, preshape, lateral, method, lowered, thumb cap, empty control, ease thumb before
+    #  lift, wait out the grasp move)
     #
-    # Easing the thumb before the lift did not relieve wrist_1: in the attempt where it
-    # was eased from 13.6Nm to 1.5Nm, the thumb load was back to 6-8Nm within 3s of the
-    # lift starting and wrist_1 still reached its 28Nm limit (the apple's weight pushes
-    # back on the thumb). The pick rate was the same either way. Dropped.
+    # Three runs of this configuration: attempts 2-4 picked 9 of 9, every one lifted the
+    # full 16.3-16.8cm; attempt 1 picked 0 of 3 (and 0 in the run before). Attempt 1 is
+    # the only one that starts from a true rest pose: its first move is measured 94-107mm
+    # from the grasp pose (attempts 2-4: 43-78mm), because the measurement is taken while
+    # the arm is still moving, and the three corrections that follow each knock the apple
+    # 14-21mm with fingertips 6-11mm away.
     #
-    # Four identical grasps, watched until the arm really stops, with simulated time and
-    # wrist_1 logged, to find out whether the "stalls" were stalls at all.
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
+    # Test: wait for the grasp move to finish before measuring, on attempts 1 and 3.
+    # Attempt 1 tells us whether it fixes the failure; attempt 3 whether it keeps the
+    # attempts that already work; 2 and 4 are the unchanged control.
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, False),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, False),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
@@ -277,6 +281,29 @@ CORRECTION_GAIN = 0.6
 # improving the whole way, so give it room to finish. Attempts that start close still
 # converge in one pass and cost nothing.
 CORRECTION_ITERS = 9
+
+
+def sim_now(node):
+    for _ in range(3):
+        rclpy.spin_once(node, timeout_sec=0.05)
+    return getattr(node, "joint_stamp", None)
+
+
+def wait_until_sim(node, sim_start, sim_seconds, wall_cap=300.0):
+    """Spin until sim_seconds of simulated time have passed since sim_start. Returns the
+    simulated seconds that had passed, or None without a simulation clock."""
+    if sim_start is None:
+        return None
+    t0 = time.time()
+    waited = 0.0
+    while time.time() - t0 < wall_cap:
+        rclpy.spin_once(node, timeout_sec=0.1)
+        now = getattr(node, "joint_stamp", None)
+        if now is not None:
+            waited = now - sim_start
+            if waited >= sim_seconds:
+                break
+    return waited
 
 
 def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05, min_wait=3.0):
@@ -987,7 +1014,7 @@ def apple_xyz(node):
 
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
-            cap_thumb=False, empty=False, relax=False):
+            cap_thumb=False, empty=False, relax=False, finish_grasp_move=False):
     global THUMB_ROLL
     THUMB_ROLL = THUMB_GRASP_ROLL
     palm_offset = PALM_OFFSET
@@ -1000,8 +1027,9 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     REC["cap"] = "on" if cap_thumb else "off"
     REC["empty"] = empty
     REC["relax"] = "on" if relax else "off"
+    REC["finish"] = "yes" if finish_grasp_move else "no"
     label = (f"{'EMPTY-HAND CONTROL' if empty else 'GRASP'}   "
-             f"thumb eased before lift: {'ON' if relax else 'off'}   "
+             f"grasp move waited out: {'YES' if finish_grasp_move else 'no'}   "
              f"thumb cap {'ON' if cap_thumb else 'off'}   grasp lowered {drop * 1000:.0f}mm   "
              f"pre-shape {preshape:.1f}")
     print(f"\n{'=' * 72}\n{label}\n{'=' * 72}")
@@ -1173,8 +1201,19 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         # stop a roll, which the flat base has since fixed. So it gets a fair re-test here,
         # side by side with the servo approach, instead of being judged on runs where the
         # apple would not stay still. Knocks are logged but do not abort.
+        grasp_cmd_sim = sim_now(node)
         node.send_arm_trajectory(grasp[0], 3.0)
         settle(node, 20.0)
+        if finish_grasp_move:
+            # Let the 3.0s grasp move finish in simulated time before measuring, so the
+            # corrections are not computed against an arm still travelling. Only this
+            # move: waiting out the approach move as well (7e769f3) let the arm reach the
+            # true back-off pose, and the swing in from there knocked the apple 72mm.
+            waited = wait_until_sim(node, grasp_cmd_sim, 3.5)
+            settle(node, 10.0)
+            if waited is not None:
+                print(f"  waited for the grasp move to finish: {waited:.1f}s of simulated time "
+                      f"since it was commanded")
         check_knock("the move to the grasp pose")
         real0 = node.real_wrist_position()
         if real0 is not None:
@@ -1660,8 +1699,8 @@ def main():
 
     results = []
     records = []
-    for pt, ps, lat, po, dr, cap, emp, rel in CASES:
-        r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel)
+    for pt, ps, lat, po, dr, cap, emp, rel, fin in CASES:
+        r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin)
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -1739,10 +1778,10 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'ease thumb':>10}  {'apple still':>11}  {'1st move off':>12}  "
+    print(f"{'#':>2}  {'wait move':>10}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
-        print(f"{idx:>2}  {rec.get('relax', '-'):>10}  "
+        print(f"{idx:>2}  {rec.get('finish', '-'):>10}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")
@@ -1775,7 +1814,8 @@ def main():
         print(f"  {idx}. [thumb cap {rec.get('cap', '-')}] {result}: {why}")
 
     print("\nHOW TO READ THIS")
-    print(f"  ease thumb       -- on: thumb eased to {THUMB_LIFT_NM:.0f}Nm just before lifting")
+    print("  wait move        -- yes: the grasp move was allowed to finish (in simulated time) "
+          "before the wrist was measured and corrected")
     print("  thumb cap        -- on: the thumb is backed off until it pushes no more than "
           f"{THUMB_PRELOAD_FORCE:.1f}Nm")
     print(f"  hand rose / took -- how far the hand actually rose, and how long it took "

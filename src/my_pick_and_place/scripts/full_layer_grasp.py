@@ -625,6 +625,28 @@ def solve_ik(chain, target_xyz, init=None, target_rotation=None, current=None):
     return [joints[j] for j in ARM_JOINTS], best
 
 
+# The UR5e's joint position limits: +-2*pi on every joint except the elbow (+-pi).
+UR_JOINT_LIMIT = {j: (np.pi if j == 'elbow_joint' else 2 * np.pi) for j in ARM_JOINTS}
+
+
+def unwrap_to_current(joints, current):
+    """Rewrite each joint angle as the equivalent (+-2*pi) closest to the current one,
+    when that equivalent is inside the joint's limit.
+
+    solve_ik reports angles in -pi..pi. Carrying the apple round to the crate turns
+    shoulder_pan half a turn, to about -pi; the next step's solution then came back at
+    about +pi -- the same arm pose written the other way round -- and was refused as a
+    6.27 rad joint swing, stopping the place with the apple still in the hand.
+    """
+    if current is None:
+        return list(joints)
+    out = []
+    for name, a, c in zip(ARM_JOINTS, joints, current):
+        b = a + 2 * np.pi * round((c - a) / (2 * np.pi))
+        out.append(float(b) if abs(b) <= UR_JOINT_LIMIT[name] + 1e-9 else float(a))
+    return out
+
+
 class FullLayerGraspNode(Node):
     def __init__(self, robot_x=DELIVERY_ROBOT_X, robot_y=DELIVERY_ROBOT_Y, robot_yaw=DELIVERY_ROBOT_YAW):
         super().__init__('full_layer_grasp_node')
@@ -1308,12 +1330,13 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             if sol is None:
                 self.get_logger().error(f"[Place] {label}: unreachable")
                 return False
-            jump = working.joint_jump(sol[0], now)
+            joints = unwrap_to_current(sol[0], now)
+            jump = working.joint_jump(joints, now)
             if jump > working.COARSE_MOVE_MAX_JUMP:
                 self.get_logger().error(f"[Place] {label}: needs a {jump:.2f} rad joint swing -- refusing")
                 return False
             t0 = working.current_sim_time(self)
-            self.send_arm_trajectory(sol[0], duration)
+            self.send_arm_trajectory(joints, duration)
             working.wait_until_sim(self, t0, duration + 0.5)
             working.settle(self, 10.0)
             return True
@@ -1441,6 +1464,13 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         crate_dist = None
         if lifted_ok:
             placed_ok, crate_dist = self.place_held_apple(working, target_name)
+            if not placed_ok:
+                # Let go wherever the hand is. Otherwise the next reset swings the arm
+                # home with the apple still gripped: that flung it 1.98m and the
+                # simulation froze on the very next attempt.
+                self.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.0,
+                                     thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
+                working.wait_until_sim(self, working.current_sim_time(self), 2.0)
             if self.target_pose is not None:
                 p = self.target_pose.position
                 pose_final_world = (p.x, p.y, p.z)

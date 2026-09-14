@@ -159,20 +159,20 @@ CASES = [
     # (tilt, preshape, lateral, method, lowered, thumb cap, empty control, ease thumb before
     #  lift, wait out the grasp move)
     #
-    # Three runs of this configuration: attempts 2-4 picked 9 of 9, every one lifted the
-    # full 16.3-16.8cm; attempt 1 picked 0 of 3 (and 0 in the run before). Attempt 1 is
-    # the only one that starts from a true rest pose: its first move is measured 94-107mm
-    # from the grasp pose (attempts 2-4: 43-78mm), because the measurement is taken while
-    # the arm is still moving, and the three corrections that follow each knock the apple
-    # 14-21mm with fingertips 6-11mm away.
+    # Waiting out the grasp move, A/B tested (91aaa7a): 4 of 4 picked. With the wait
+    # (attempts 1 and 3) the arm landed 0mm from the grasp pose, needed no corrections,
+    # disturbed the apple 8mm, lifted it +15.2 and +15.1cm, and wrist_1 peaked at 12Nm.
+    # Without it (2 and 4) the first move was measured 40-50mm off mid-move, one
+    # correction knocked the apple 10-13mm, and wrist_1 hit its 28Nm limit and
+    # shoulder_lift 150Nm at the very start of the lift -- so those limit readings were
+    # the arm still driving through an unfinished correction, not the apple's load.
+    # Attempt 1, which had failed in every previous run, picked.
     #
-    # Test: wait for the grasp move to finish before measuring, on attempts 1 and 3.
-    # Attempt 1 tells us whether it fixes the failure; attempt 3 whether it keeps the
-    # attempts that already work; 2 and 4 are the unchanged control.
+    # Now on for every attempt, to confirm it holds over four more.
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, False),
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, False),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]

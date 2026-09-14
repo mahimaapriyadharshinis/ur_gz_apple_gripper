@@ -18,7 +18,8 @@ fi
 cd "$(dirname "$0")"
 for apple in "${APPLES[@]}"; do
     echo "=================== $apple ($ATTEMPTS attempts) ==================="
-    python3 pocket_grasp_test.py "$apple" "$ATTEMPTS" 2>&1 \
+    # -u: unbuffered, so the script's own lines stay in order with the ROS log lines
+    python3 -u pocket_grasp_test.py "$apple" "$ATTEMPTS" 2>&1 \
         | grep -v "UserWarning\|warnings.warn" | tee "/tmp/pocket_${apple}.log"
 done
 
@@ -27,7 +28,9 @@ echo "=================== SUMMARY ==================="
 for apple in "${APPLES[@]}"; do
     picked=$(grep -h "^PICKED" "/tmp/pocket_${apple}.log" | tail -1)
     lifts=$(grep -h "grasp attempts lifted" "/tmp/pocket_${apple}.log" | tail -1 | sed 's/^ *//')
-    frozen=$(grep -c "SIM FROZE\|SIM TOO SLOW\|DEAD SIM" "/tmp/pocket_${apple}.log")
+    # Match only attempt verdicts ("  2. [thumb cap on] SIM FROZE: ...") and the abort line,
+    # not the legend, which names every verdict and made every apple look affected.
+    frozen=$(grep -cE "\] (SIM FROZE|SIM TOO SLOW|DEAD SIM):|^  SIM FROZE: " "/tmp/pocket_${apple}.log")
     echo "$apple: ${picked:-NO RESULT (see /tmp/pocket_${apple}.log)}"
     [ -n "$lifts" ] && echo "    $lifts"
     [ "$frozen" -gt 0 ] && echo "    !! simulation problem reported -- restart Gazebo and rerun this apple"

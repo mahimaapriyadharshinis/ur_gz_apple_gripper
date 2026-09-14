@@ -54,6 +54,26 @@ STEP_DURATION = 0.25
 # limited to 1.047 rad. 1.25 keeps both under their limit with margin at fragility=0.
 MAX_PITCH_CEILING = 1.25
 
+# Vision-set grip, used by run_working_grasp. The vision model's fragility score (0 =
+# robust, 10 = very fragile) picks how far the fingers squeeze past first contact,
+# linearly within this range: fragile -> the low end, robust -> the high end.
+# Measured so far: 0.05 rad did not hold the apple (3 of 5 fingers, no lift) and 0.12
+# rad picked all ten apples. The ends of this range must each pick a light and a heavy
+# apple before VISION_SETS_GRIP is switched on (pocket_grasp_test.py squeeze=...).
+GRIP_SQUEEZE_RANGE = (0.08, 0.16)
+VISION_SETS_GRIP = False
+
+
+def squeeze_for_fragility(fragility):
+    """Squeeze past first contact (rad) for a 0-10 fragility score, inside the range."""
+    try:
+        f = float(fragility)
+    except (TypeError, ValueError):
+        f = 5.0
+    f = min(10.0, max(0.0, f))
+    low, high = GRIP_SQUEEZE_RANGE
+    return high - (high - low) * f / 10.0
+
 # Thumb position relative to the palm, measured with thumb_opposition_check.py.
 # R_Thumb_Yaw/Roll were never commanded before, leaving the thumb at yaw=0 where its
 # tip protrudes 0.1185m along the palm normal. With the palm facing down at the grasp
@@ -1260,9 +1280,18 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             vlm_result = self.layer1_vlm_analysis()
             plan = self.layer2_imagination(vlm_result)
             seen["vlm"], seen["plan"] = vlm_result, plan
-            # Step 1 of the integration: the vision result is recorded but does not yet
-            # change the grip, so this reproduces the tested grasp exactly.
-            return {}
+            squeeze = squeeze_for_fragility(vlm_result.get("fragility_score", 5))
+            seen["vision_squeeze"] = squeeze
+            if not VISION_SETS_GRIP:
+                self.get_logger().info(
+                    f"[Grip] vision fragility {vlm_result.get('fragility_score')} would squeeze "
+                    f"{squeeze:.3f} rad; not applied yet (VISION_SETS_GRIP is off), "
+                    f"using the tested grip")
+                return {}
+            self.get_logger().info(
+                f"[Grip] vision fragility {vlm_result.get('fragility_score')} -> squeeze "
+                f"{squeeze:.3f} rad past first contact")
+            return {"squeeze_extra": squeeze}
 
         r = working.attempt(self, target_name, working.PALM_TILT, working.PRESHAPE,
                             working.LATERAL, "pick", 0.008, cap_thumb=True,
@@ -1308,6 +1337,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             "vlm_analysis": seen.get("vlm"),
             "grip_plan": seen.get("plan"),
             "squeeze": rec.get("squeeze"),
+            "vision_squeeze": seen.get("vision_squeeze"),
+            "vision_sets_grip": VISION_SETS_GRIP,
             "contacts": rec.get("contacts"),
             "apple_rose": rec.get("lift"),
             "outcome": outcome,

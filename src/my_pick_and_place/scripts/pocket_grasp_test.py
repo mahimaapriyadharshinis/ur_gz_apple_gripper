@@ -1475,6 +1475,9 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         if overrides.get("squeeze_extra") is not None:
             squeeze_extra = float(overrides["squeeze_extra"])
     REC["squeeze"] = squeeze_extra
+    if squeeze_extra != SQUEEZE_EXTRA:
+        print(f"  squeezing {squeeze_extra:.3f} rad past first contact "
+              f"(tested value {SQUEEZE_EXTRA:.3f})")
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_now,
         radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW,
@@ -1697,12 +1700,27 @@ def main():
     # Optional second argument: how many of the CASES to run (e.g. 2 for a quicker check
     # across many apples). Default: all of them.
     cases = CASES
-    if len(sys.argv) > 2:
+    squeeze_override = None
+    for arg in sys.argv[2:]:
+        # squeeze=0.08: squeeze this far (rad) past first contact instead of the tested
+        # SQUEEZE_EXTRA. Used to find the range the vision layer may choose from.
+        if arg.startswith("squeeze="):
+            try:
+                squeeze_override = float(arg.split("=", 1)[1])
+            except ValueError:
+                print(f"squeeze= needs a number in radians, got {arg!r}")
+                return
+            continue
         try:
-            cases = CASES[:max(1, int(sys.argv[2]))]
+            cases = CASES[:max(1, int(arg))]
         except ValueError:
-            print(f"Second argument must be a number of attempts, got {sys.argv[2]!r}")
+            print(f"Arguments: [number of attempts] [squeeze=RAD], got {arg!r}")
             return
+    before_close = None
+    if squeeze_override is not None:
+        print(f"Squeeze past first contact set to {squeeze_override:.3f} rad "
+              f"(tested value {SQUEEZE_EXTRA:.3f})")
+        before_close = lambda node: {"squeeze_extra": squeeze_override}  # noqa: E731
 
     print(f"Target {target_name}. Aiming the CLOSED fingertip centroid "
           f"{CLOSED_CENTROID_HAND_FRAME} at the apple, not the wrist or the open hand.")
@@ -1735,7 +1753,8 @@ def main():
     results = []
     records = []
     for pt, ps, lat, po, dr, cap, emp, rel, fin in cases:
-        r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin)
+        r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin,
+                    before_close=before_close)
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -1885,7 +1904,9 @@ def main():
           f"more counts as held")
 
     picked = sum(1 for _, _, result, _ in rows if result == "PICKED")
-    print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS ON {target_name}.")
+    squeeze_note = ("" if squeeze_override is None
+                    else f" (squeeze {squeeze_override:.3f} rad)")
+    print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS ON {target_name}{squeeze_note}.")
     lifts = [rec["lift"] for _, rec, _, _ in rows
              if rec.get("lift") is not None and not rec.get("empty")]
     if lifts:

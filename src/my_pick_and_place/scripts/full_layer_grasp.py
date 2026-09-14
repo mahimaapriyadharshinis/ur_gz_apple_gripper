@@ -1432,8 +1432,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             if self.target_pose is not None:
                 p = self.target_pose.position
                 pose_final_world = (p.x, p.y, p.z)
-            if not placed_ok:
-                outcome = "not_placed"
+            outcome = "placed" if placed_ok else "not_placed"
         success = lifted_ok and placed_ok
 
         self.layer7_log_experience({
@@ -1797,14 +1796,53 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 full_layer_grasp.py <object_name>")
+    # python3 full_layer_grasp.py apple_06 [apple_07 ...] [attempts per apple]
+    args = sys.argv[1:]
+    attempts = 1
+    if args and args[-1].isdigit():
+        attempts = max(1, int(args.pop()))
+    targets = args
+    unknown = [t for t in targets if t not in APPLE_HOME_WORLD_XY]
+    if not targets or unknown:
+        print("Usage: python3 full_layer_grasp.py <apple_XX> [<apple_XX> ...] [attempts per apple]")
+        if unknown:
+            print(f"Unknown apple(s): {', '.join(unknown)}")
         sys.exit(1)
+
     rclpy.init()
     node = FullLayerGraspNode()
-    node.run_for_target(sys.argv[1])
+    results = []
+    for target in targets:
+        for i in range(attempts):
+            print(f"\n{'#' * 72}\n# {target}: pick-and-place attempt {i + 1} of {attempts}\n{'#' * 72}")
+            results.append(node.run_for_target(target))
     node.destroy_node()
     rclpy.shutdown()
+
+    print(f"\n{'=' * 84}\nPICK-AND-PLACE RESULTS\n{'=' * 84}")
+    print(f"{'apple':<10} {'#':>2}  {'fragility':>9}  {'apple rose':>10}  "
+          f"{'crate dist':>10}  {'outcome':<22} RESULT")
+    per_apple = {}
+    for target, r in zip([t for t in targets for _ in range(attempts)], results):
+        per_apple.setdefault(target, []).append(r)
+        n = len(per_apple[target])
+        rose = r.get("apple_rose")
+        dist = r.get("crate_distance")
+        frag = (r.get("vlm") or {}).get("fragility_score", "-")
+        print(f"{target:<10} {n:>2}  {str(frag):>9}  "
+              f"{('-' if rose is None else f'{rose * 100:+.1f}cm'):>10}  "
+              f"{('-' if dist is None else f'{dist * 1000:.0f}mm'):>10}  "
+              f"{r.get('outcome', '-'):<22} {'PICKED+PLACED' if r.get('success') else 'FAILED'}")
+    print("-" * 84)
+    for target, rs in per_apple.items():
+        picked = sum(1 for r in rs if r.get("lifted_ok"))
+        placed = sum(1 for r in rs if r.get("success"))
+        frozen = sum(1 for r in rs if r.get("outcome") in ("sim_frozen", "dead_sim"))
+        note = f"  ({frozen} lost to a frozen simulation -- rerun)" if frozen else ""
+        print(f"{target}: picked {picked}/{len(rs)}, placed in crate {placed}/{len(rs)}{note}")
+    print("outcome: placed = in the crate; not_placed = picked but dropped or missed the crate; "
+          "not_held = grasp failed; not_positioned = apple knocked before closing; "
+          "sim_frozen = Gazebo stopped")
 
 
 if __name__ == '__main__':

@@ -1214,6 +1214,16 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             if waited is not None:
                 print(f"  waited for the grasp move to finish: {waited:.1f}s of simulated time "
                       f"since it was commanded")
+                if waited < 3.0:
+                    # The simulation clock stopped. On apple_03 it reported 0.0s after the
+                    # 300s wait, the arm had not moved (164mm off, three corrections all
+                    # 164mm), and carrying on drove the hand through the apple and scored
+                    # the attempt NOT HELD. Stop here instead: nothing about the grasp can
+                    # be measured on a frozen simulation.
+                    print("  SIM FROZE: the simulation clock did not advance during the grasp "
+                          "move -- abandoning this attempt")
+                    return {"ok": False, "sim_frozen": True, "palm_offset": palm_offset,
+                            "lateral": lateral, "palm_tilt": palm_tilt}
         check_knock("the move to the grasp pose")
         real0 = node.real_wrist_position()
         if real0 is not None:
@@ -1728,6 +1738,9 @@ def main():
             result, why = "DEAD SIM", "the simulation stopped publishing joint states"
         elif r.get("knocked"):
             result, why = "KNOCKED", f"apple knocked away by {r['knocked_by']}"
+        elif r.get("sim_frozen"):
+            result, why = "SIM FROZE", ("the simulation clock stopped during the grasp move; "
+                                        "restart Gazebo and rerun this apple")
         elif r.get("not_positioned"):
             result, why = "HELD BACK", r["reason"]
         elif not r.get("ok"):

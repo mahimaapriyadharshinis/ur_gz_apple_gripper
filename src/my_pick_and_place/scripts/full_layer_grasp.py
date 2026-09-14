@@ -142,6 +142,13 @@ DELIVERY_ROBOT_YAW = 1.5708
 # UNVERIFIED against the real solver/sim -- test this before running pick_all_apples.py.
 CRATE_LOCAL_XY = (-0.6, 0.0)
 CRATE_LOCAL_Z = 0.08
+# From models/crate/model.sdf: walls 0.02-0.14m high, inner half-width 0.09m.
+CRATE_WALL_TOP_Z = 0.14
+CRATE_INNER_HALF = 0.09
+# How far above the crate walls the bottom of the apple is when the hand opens.
+RELEASE_CLEARANCE = 0.03
+# Longest straight-line step when carrying the apple down to the crate.
+PLACE_STEP_M = 0.10
 
 # Apples' known real spawn positions, straight from apple_world.world (apple_NN at
 # world (0.25*(NN-1), 0.00, 0.45), settling to Z=0.440 under gravity -- confirmed
@@ -1257,6 +1264,111 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         msg.points = [point]
         self.arm_pub.publish(msg)
 
+    def place_held_apple(self, working, target_name):
+        """Carry the apple the hand is already holding to the crate, and release it.
+
+        The older layer_place() teleported the robot base to the delivery station with
+        the apple in its hand. A teleport moves only the robot model, so for any apple
+        other than apple_06 (whose station is the delivery station) the apple was left
+        behind; it also aimed the wrist 8cm above the floor. Here the base never moves:
+        the crate is put at the same spot relative to the robot at every station
+        (CRATE_LOCAL_XY, behind the robot), and the arm swings the held apple round to
+        it in small steps, lowers it over the crate and opens the hand.
+
+        Returns (placed, distance of the apple from the crate centre in m or None).
+        """
+        crate_x, crate_y = CRATE_LOCAL_XY
+        crate_wx, crate_wy = local_to_world(crate_x, crate_y,
+                                            self.robot_x, self.robot_y, self.robot_yaw)
+        self.teleport_model("crate", crate_wx, crate_wy, 0.0, yaw=self.robot_yaw, settle_sec=1.0)
+
+        wrist = self.real_wrist_position()
+        rot_now = working.real_wrist_rotation(self)
+        here = working.arm_now(self)
+        p = self.target_pose.position if self.target_pose is not None else None
+        if wrist is None or rot_now is None or here is None or p is None:
+            self.get_logger().error("[Place] robot or apple state unavailable -- not placing")
+            return False, None
+        ax, ay = world_to_local(p.x, p.y, self.robot_x, self.robot_y, self.robot_yaw)
+        # Where the apple actually sits relative to the wrist, measured now rather than
+        # assumed from the grasp geometry: heavier apples sit a few mm lower in the hand.
+        apple_rel = np.array([ax, ay, p.z]) - np.array(wrist)
+
+        start_yaw = float(np.arctan2(ay, ax))
+        crate_yaw = float(np.arctan2(crate_y, crate_x))
+        turn = (crate_yaw - start_yaw + np.pi) % (2 * np.pi) - np.pi
+
+        def rz(a):
+            c, s_ = np.cos(a), np.sin(a)
+            return np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]])
+
+        def move(target_xyz, target_rot, duration, label):
+            now = working.arm_now(self)
+            sol = solve_ik(self.chain, list(target_xyz), target_rotation=target_rot, current=now)
+            if sol is None:
+                self.get_logger().error(f"[Place] {label}: unreachable")
+                return False
+            jump = working.joint_jump(sol[0], now)
+            if jump > working.COARSE_MOVE_MAX_JUMP:
+                self.get_logger().error(f"[Place] {label}: needs a {jump:.2f} rad joint swing -- refusing")
+                return False
+            t0 = working.current_sim_time(self)
+            self.send_arm_trajectory(sol[0], duration)
+            working.wait_until_sim(self, t0, duration + 0.5)
+            working.settle(self, 10.0)
+            return True
+
+        # Swing round at carrying height, a quarter-turn or less per move, slowly, so
+        # the held apple is not flung. Each step rotates the whole hand pose (and so the
+        # apple) about the robot's vertical axis.
+        steps = max(1, int(np.ceil(abs(turn) / (np.pi / 4))))
+        wrist0 = np.array(wrist)
+        for i in range(1, steps + 1):
+            r = rz(turn * i / steps)
+            if not move(r @ wrist0, r @ rot_now, 3.0, f"swing {i}/{steps}"):
+                return False, None
+        r = rz(turn)
+        rot_place = r @ rot_now
+        apple_rel_place = r @ apple_rel
+
+        # Lower until the apple's bottom is RELEASE_CLEARANCE above the crate's walls.
+        radius = APPLE_RADIUS.get(target_name, 0.0555)
+        release_apple = np.array([crate_x, crate_y, CRATE_WALL_TOP_Z + radius + RELEASE_CLEARANCE])
+        start = r @ wrist0
+        goal = release_apple - apple_rel_place
+        # In straight-line steps of at most PLACE_STEP_M, so no single move needs a
+        # large joint swing and the apple follows a predictable path down.
+        n_down = max(1, int(np.ceil(np.linalg.norm(goal - start) / PLACE_STEP_M)))
+        for i in range(1, n_down + 1):
+            if not move(start + (goal - start) * i / n_down, rot_place, 2.0,
+                        f"lower over the crate {i}/{n_down}"):
+                return False, None
+
+        self.get_logger().info("[Place] releasing")
+        self.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.0,
+                             thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
+        t0 = working.current_sim_time(self)
+        working.wait_until_sim(self, t0, 2.0)
+        for _ in range(10):
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        dist = None
+        if self.target_pose is not None:
+            q = self.target_pose.position
+            dist = float(np.hypot(q.x - crate_wx, q.y - crate_wy))
+            inside = dist <= CRATE_INNER_HALF and q.z < CRATE_WALL_TOP_Z + radius
+            self.get_logger().info(
+                f"[Place] apple came to rest {dist * 1000:.0f}mm from the crate centre at "
+                f"height {q.z:.3f}m -- {'IN the crate' if inside else 'NOT in the crate'}")
+        else:
+            inside = False
+
+        # Lift the empty hand clear of the crate.
+        wrist_rel = self.real_wrist_position()
+        if wrist_rel is not None:
+            move(np.array(wrist_rel) + np.array([0.0, 0.0, 0.10]), rot_place, 2.0, "retreat")
+        return inside, dist
+
     def run_working_grasp(self, target_name):
         """Pick-and-place using the grasp validated in pocket_grasp_test.py.
 
@@ -1314,18 +1426,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         placed_ok = False
         pose_final_world = None
+        crate_dist = None
         if lifted_ok:
-            placed_ok = self.layer_place()
-            for _ in range(10):
-                rclpy.spin_once(self, timeout_sec=0.2)
+            placed_ok, crate_dist = self.place_held_apple(working, target_name)
             if self.target_pose is not None:
                 p = self.target_pose.position
                 pose_final_world = (p.x, p.y, p.z)
-                dist_to_crate = float(np.hypot(p.x - CRATE_WORLD_XY[0], p.y - CRATE_WORLD_XY[1]))
-                self.get_logger().info(
-                    f"[Place] apple settled {dist_to_crate:.2f}m from the crate centre")
-                if dist_to_crate > 0.3:
-                    placed_ok = False
             if not placed_ok:
                 outcome = "not_placed"
         success = lifted_ok and placed_ok
@@ -1345,6 +1451,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             "lifted_ok": lifted_ok,
             "placed_ok": placed_ok,
             "pose_final_world": pose_final_world,
+            "crate_distance": crate_dist,
             "success": success,
         })
         self.get_logger().info(
@@ -1353,7 +1460,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             f"{'-' if rec.get('lift') is None else '%+.3fm' % rec['lift']}) ===")
         return {"target": target_name, "success": success, "outcome": outcome,
                 "lifted_ok": lifted_ok, "placed_ok": placed_ok,
-                "apple_rose": rec.get("lift"), "vlm": seen.get("vlm")}
+                "apple_rose": rec.get("lift"), "crate_distance": crate_dist,
+                "vlm": seen.get("vlm")}
 
     def run_for_target(self, target_name, closing_policy_params=None, grasp="working"):
         """Run the full pick-and-place sequence for one apple. Returns a result dict.

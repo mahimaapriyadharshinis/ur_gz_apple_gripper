@@ -24,6 +24,7 @@ cd ~/ur_gz_ws/src/my_pick_and_place/scripts
 python3 pocket_grasp_test.py apple_06     # grasp test on one apple
 bash test_all_apples.sh                   # grasp test on several apples
 python3 full_layer_grasp.py apple_06      # full pick-and-place
+bash test_all_apples.sh full              # full pick-and-place on all apples
 ```
 
 If nothing moves for several minutes, restart Terminal 1 and run again.

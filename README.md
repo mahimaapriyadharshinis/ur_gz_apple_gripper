@@ -48,8 +48,8 @@ script does not reproduce these results yet.
 - **Gazebo sometimes freezes** (the simulation clock stops). The test detects this
   and reports `SIM FROZE` instead of blaming the grasp. Restart Gazebo when you see it.
 
-The full debugging history, measurements and novelty discussion are in
-`Apple_Gripper_Progress_Report.pdf`.
+The full debugging history, measurements and novelty discussion are in the project
+progress report (kept separately, not in this repository).
 
 ---
 
@@ -169,7 +169,6 @@ python3 tools/check_scopes.py src/my_pick_and_place/scripts/*.py
 | `vlm_scripts/` | Qwen2.5-VL fragility node |
 | `tools/` | Development checks |
 | `start_everything.sh` | One-command simulation startup |
-| `Apple_Gripper_Progress_Report.pdf` | Project report: design, full debugging timeline, results, novelty |
 
 ## Troubleshooting
 

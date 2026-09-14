@@ -1392,7 +1392,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             move(np.array(wrist_rel) + np.array([0.0, 0.0, 0.10]), rot_place, 2.0, "retreat")
         return inside, dist
 
-    def run_working_grasp(self, target_name):
+    def run_working_grasp(self, target_name, place=False):
         """Pick-and-place using the grasp validated in pocket_grasp_test.py.
 
         That grasp picked all ten apples (29 of 30 attempts, the miss a frozen
@@ -1462,7 +1462,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         placed_ok = False
         pose_final_world = None
         crate_dist = None
-        if lifted_ok:
+        if lifted_ok and place:
             placed_ok, crate_dist = self.place_held_apple(working, target_name)
             if not placed_ok:
                 # Let go wherever the hand is. Otherwise the next reset swings the arm
@@ -1475,12 +1475,15 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 p = self.target_pose.position
                 pose_final_world = (p.x, p.y, p.z)
             outcome = "placed" if placed_ok else "not_placed"
-        success = lifted_ok and placed_ok
+        # Picking only (the default): success is a held lift. With place=True the apple
+        # must also end up in the crate.
+        success = lifted_ok and (placed_ok or not place)
 
         self.layer7_log_experience({
             "timestamp": time.time(),
             "object": target_name,
             "grasp": "working",
+            "place_requested": place,
             "vlm_analysis": seen.get("vlm"),
             "grip_plan": seen.get("plan"),
             "squeeze": rec.get("squeeze"),
@@ -1504,14 +1507,15 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 "apple_rose": rec.get("lift"), "crate_distance": crate_dist,
                 "vlm": seen.get("vlm")}
 
-    def run_for_target(self, target_name, closing_policy_params=None, grasp="working"):
+    def run_for_target(self, target_name, closing_policy_params=None, grasp="working",
+                       place=False):
         """Run the full pick-and-place sequence for one apple. Returns a result dict.
 
         By default this uses the validated grasp (run_working_grasp). The original
         closing schedule below is kept for the learned-policy tools: passing
         closing_policy_params, or grasp="legacy", runs it unchanged."""
         if closing_policy_params is None and grasp == "working":
-            return self.run_working_grasp(target_name)
+            return self.run_working_grasp(target_name, place=place)
         self.set_target(target_name)
         self.wait_for(lambda: self.target_pose is not None, timeout=5.0)
         # Move the robot to its rest pose FIRST, then reset the apple -- not the other
@@ -1838,15 +1842,18 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
 
 def main():
-    # python3 full_layer_grasp.py apple_06 [apple_07 ...] [attempts per apple]
+    # python3 full_layer_grasp.py apple_06 [apple_07 ...] [attempts per apple] [place]
+    # Picks and holds by default; add "place" to also carry the apple to the crate.
     args = sys.argv[1:]
+    place = "place" in args
+    args = [a for a in args if a != "place"]
     attempts = 1
     if args and args[-1].isdigit():
         attempts = max(1, int(args.pop()))
     targets = args
     unknown = [t for t in targets if t not in APPLE_HOME_WORLD_XY]
     if not targets or unknown:
-        print("Usage: python3 full_layer_grasp.py <apple_XX> [<apple_XX> ...] [attempts per apple]")
+        print("Usage: python3 full_layer_grasp.py <apple_XX> [<apple_XX> ...] [attempts per apple] [place]")
         if unknown:
             print(f"Unknown apple(s): {', '.join(unknown)}")
         sys.exit(1)
@@ -1856,12 +1863,13 @@ def main():
     results = []
     for target in targets:
         for i in range(attempts):
-            print(f"\n{'#' * 72}\n# {target}: pick-and-place attempt {i + 1} of {attempts}\n{'#' * 72}")
-            results.append(node.run_for_target(target))
+            what = "pick-and-place" if place else "pick"
+            print(f"\n{'#' * 72}\n# {target}: {what} attempt {i + 1} of {attempts}\n{'#' * 72}")
+            results.append(node.run_for_target(target, place=place))
     node.destroy_node()
     rclpy.shutdown()
 
-    print(f"\n{'=' * 84}\nPICK-AND-PLACE RESULTS\n{'=' * 84}")
+    print(f"\n{'=' * 84}\n{'PICK-AND-PLACE' if place else 'PICK'} RESULTS\n{'=' * 84}")
     print(f"{'apple':<10} {'#':>2}  {'fragility':>9}  {'apple rose':>10}  "
           f"{'crate dist':>10}  {'outcome':<22} RESULT")
     per_apple = {}
@@ -1874,17 +1882,19 @@ def main():
         print(f"{target:<10} {n:>2}  {str(frag):>9}  "
               f"{('-' if rose is None else f'{rose * 100:+.1f}cm'):>10}  "
               f"{('-' if dist is None else f'{dist * 1000:.0f}mm'):>10}  "
-              f"{r.get('outcome', '-'):<22} {'PICKED+PLACED' if r.get('success') else 'FAILED'}")
+              f"{r.get('outcome', '-'):<22} "
+              f"{('PICKED+PLACED' if place else 'PICKED') if r.get('success') else 'FAILED'}")
     print("-" * 84)
     for target, rs in per_apple.items():
         picked = sum(1 for r in rs if r.get("lifted_ok"))
         placed = sum(1 for r in rs if r.get("success"))
         frozen = sum(1 for r in rs if r.get("outcome") in ("sim_frozen", "dead_sim"))
         note = f"  ({frozen} lost to a frozen simulation -- rerun)" if frozen else ""
-        print(f"{target}: picked {picked}/{len(rs)}, placed in crate {placed}/{len(rs)}{note}")
-    print("outcome: placed = in the crate; not_placed = picked but dropped or missed the crate; "
-          "not_held = grasp failed; not_positioned = apple knocked before closing; "
-          "sim_frozen = Gazebo stopped")
+        placed_txt = f", placed in crate {placed}/{len(rs)}" if place else ""
+        print(f"{target}: picked {picked}/{len(rs)}{placed_txt}{note}")
+    print("outcome: held = picked and held through the lift; not_held = grasp failed; "
+          "not_positioned = apple knocked before closing; sim_frozen = Gazebo stopped"
+          + ("; placed = in the crate; not_placed = picked but missed the crate" if place else ""))
 
 
 if __name__ == '__main__':

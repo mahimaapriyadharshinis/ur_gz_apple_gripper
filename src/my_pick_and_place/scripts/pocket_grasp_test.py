@@ -370,6 +370,18 @@ LIFT_SAMPLE_S = 0.2
 # was still rising at 5mm/s when the 25s limit ended its watch at 102mm.
 LIFT_WATCH_S = 60.0
 LIFT_STILL_S = 8.0          # hand counted as stopped after rising <2mm over this long
+#
+# Watch the lift in SIMULATED time when the clock is available. Gazebo's speed is not
+# constant: lifting an empty hand ran at 3.7s simulated per 42s (0.09x real time), but
+# lifting a hard-squeezed apple ran at 1.0s per 60s (0.017x) and 0.6s per 31s (0.02x),
+# so the 60s wall-clock watch ended while the arm had had a third of its 3.0s move, and
+# attempts with the apple held firmly in the hand (4/4 fingers loaded, 0-1mm behind the
+# hand) were scored ARM STALLED. The lift is judged only once the arm has had the whole
+# commanded duration plus a margin; the still-rule also counts in simulated time.
+LIFT_SIM_DONE_S = 3.3       # simulated seconds: the 3.0s lift plus a margin
+LIFT_SIM_STILL_S = 0.5      # simulated seconds without rising, after that, ends the watch
+LIFT_WALL_CAP_S = 900.0     # give up if the simulation will not get there at all
+LIFT_FROZEN_WALL_S = 90.0   # the simulation clock not advancing at all for this long
 # 15mm, not 5mm. As the lift starts the apple settles a few millimetres down into the
 # cradle of the fingers and then rises with the hand at that offset: the one picked apple
 # in the last run sat a steady 6mm behind the hand from 1.4s to 25s and rose 11.3cm. At 5mm
@@ -1482,7 +1494,11 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         t_start = time.time()
         sim_start = getattr(node, "joint_stamp", None)
         last_rise_t, last_rise_h = t_start, 0.0
-        while time.time() - t_start < LIFT_WATCH_S and w0 is not None and a0 is not None:
+        last_rise_sim = 0.0
+        last_clock_move, last_sim_seen = t_start, None
+        use_sim = sim_start is not None
+        while (time.time() - t_start < (LIFT_WALL_CAP_S if use_sim else LIFT_WATCH_S)
+               and w0 is not None and a0 is not None):
             for _ in range(2):
                 rclpy.spin_once(node, timeout_sec=LIFT_SAMPLE_S / 2)
             w = node.real_wrist_position()
@@ -1507,7 +1523,18 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
                           n_loaded, loads["R_Thumb"], lift_eff, w1_eff, sim_t))
             if slip_at is None and lagging > SLIP_MM:
                 slip_at = (hand_rise, n_loaded, loads["R_Thumb"], now_t - t_start)
-            if hand_rise - last_rise_h > 2.0:
+            if use_sim and sim_t is not None:
+                if last_sim_seen is None or sim_t > last_sim_seen + 1e-6:
+                    last_sim_seen, last_clock_move = sim_t, now_t
+                elif now_t - last_clock_move > LIFT_FROZEN_WALL_S:
+                    break           # the simulation clock has stopped
+                if hand_rise - last_rise_h > 2.0:
+                    last_rise_h, last_rise_sim = hand_rise, sim_t
+                elif (sim_t > LIFT_SIM_DONE_S
+                      and sim_t - max(last_rise_sim, LIFT_SIM_DONE_S - LIFT_SIM_STILL_S)
+                      > LIFT_SIM_STILL_S):
+                    break
+            elif hand_rise - last_rise_h > 2.0:
                 last_rise_t, last_rise_h = now_t, hand_rise
             elif now_t - last_rise_t > LIFT_STILL_S and now_t - t_start > 4.0:
                 break
@@ -1515,14 +1542,17 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         if trace:
             print("    time  sim time   hand up  apple up  apple behind  fingers loaded   thumb  "
                   "shoulder  wrist_1")
-            shown = -1.0
+            shown_t, shown_sim = -99.0, -99.0
             for row in trace:
-                if row[0] - shown >= 2.0 or row is trace[-1]:
-                    t_, h_, a_, lag_, nl_, th_, se_, w1_, st_ = row
-                    st_txt = "-" if st_ is None else f"{st_:.1f}s"
-                    print(f"    {t_:4.1f}s  {st_txt:>8}  {h_:+6.0f}mm  {a_:+6.0f}mm  {lag_:+8.0f}mm  "
+                t_, h_, a_, lag_, nl_, th_, se_, w1_, st_ = row
+                # One row per 0.25s of simulated time (or 2s of wall time without a clock),
+                # so a slow simulation does not print hundreds of identical rows.
+                due = (st_ - shown_sim >= 0.25) if st_ is not None else (t_ - shown_t >= 2.0)
+                if due or row is trace[-1]:
+                    st_txt = "-" if st_ is None else f"{st_:.2f}s"
+                    print(f"    {t_:5.1f}s  {st_txt:>8}  {h_:+6.0f}mm  {a_:+6.0f}mm  {lag_:+8.0f}mm  "
                           f"{nl_:>10}/4  {th_:5.2f}Nm  {se_:5.0f}Nm  {w1_:5.1f}Nm")
-                    shown = t_
+                    shown_t, shown_sim = t_, (st_ if st_ is not None else shown_sim)
             final = trace[-1]
             REC["hand_rise"] = final[1] / 1000.0
             REC["lift_time"] = final[0]
@@ -1532,7 +1562,11 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             # joint held at its limit throughout are different problems.
             REC["wrist1_pinned"] = (sum(1 for row in trace if row[7] >= 0.98 * 28.0)
                                     / float(len(trace)))
-            sim_txt = "" if final[8] is None else f" ({final[8]:.1f}s of simulated time)"
+            if final[8] is not None and final[0] > 0:
+                REC["rtf"] = final[8] / final[0]
+            sim_txt = ("" if final[8] is None else
+                       f" ({final[8]:.1f}s of simulated time; the simulation ran at "
+                       f"{final[8] / max(final[0], 1e-6):.3f}x real time)")
             print(f"  hand rose {final[1]:.0f}mm of the commanded {LIFT_HEIGHT * 1000:.0f}mm "
                   f"in {final[0]:.1f}s{sim_txt}, commanded to take 3.0s; wrist_1 at its limit "
                   f"in {REC['wrist1_pinned'] * 100:.0f}% of samples")
@@ -1650,6 +1684,14 @@ def main():
             result, why = "HELD BACK", r["reason"]
         elif not r.get("ok"):
             result, why = "UNREACHABLE", "the arm cannot reach the target"
+        elif (rec.get("lift_sim_time") is not None and rec["lift_sim_time"] < LIFT_SIM_DONE_S
+              and rec.get("lift_sim_time") >= 0.5 and r.get("lifted") is None):
+            result = "SIM TOO SLOW"
+            why = (f"the arm had only {rec['lift_sim_time']:.1f}s of its 3.0s lift in "
+                   f"{rec.get('lift_time', 0):.0f}s of watching (the simulation ran at "
+                   f"{rec.get('rtf', 0):.3f}x real time); apple rose "
+                   f"{(rec.get('lift') or 0) * 100:+.1f}cm so far, "
+                   f"{'still in the hand' if (rec.get('final_lag') or 1) * 1000 <= FOLLOW_MM else 'falling behind'}")
         elif rec.get("lift_sim_time") is not None and rec["lift_sim_time"] < 0.5:
             # The simulation's own clock did not advance during the lift: Gazebo froze.
             # One attempt was scored ARM STALLED with 0.0s of simulated time over 8s of
@@ -1743,6 +1785,8 @@ def main():
     print("  shoulder/wrist_1 -- peak effort on those arm joints during the lift "
           "(limits 150Nm and 28Nm)")
     print("  ARM STALLED      -- the apple stayed in the hand, but the arm stopped lifting")
+    print("  SIM TOO SLOW     -- the watch ran out before the arm had its whole lift in "
+          "simulated time")
     print("  SIM FROZE        -- Gazebo's clock stopped during the lift; the attempt tells us "
           "nothing -- restart the simulation")
     print("  CONTROL          -- same attempt with the apple removed, to see if the arm "

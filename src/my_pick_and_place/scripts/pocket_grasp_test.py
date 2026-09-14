@@ -164,15 +164,7 @@ CASES = [
     # back on the thumb). The pick rate was the same either way. Dropped.
     #
     # Four identical grasps, watched until the arm really stops, with simulated time and
-    # wrist_1 logged, to find out whether the "stalls" were stalls at all. They were not:
-    # two runs of this gave 3/4 and 3/4 picks, every pick lifted the full 16.6-16.8cm.
-    #
-    # Both runs, and the run before, failed on attempt 1 only: its first move landed
-    # 84, 96, 94mm off (attempts 2-4: 44-75mm), the corrections disturbed the apple and
-    # nothing gripped. The arm was being measured mid-move (see settle), and attempt 1 is
-    # the only one that starts from a genuine rest pose far from the apple -- the reset
-    # between attempts waited ~0.4s of simulated time, so attempts 2-4 set off from near
-    # the apple. Same grasp; every arm move is now waited out in simulated time.
+    # wrist_1 logged, to find out whether the "stalls" were stalls at all.
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
     (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False),
@@ -287,16 +279,7 @@ CORRECTION_GAIN = 0.6
 CORRECTION_ITERS = 9
 
 
-def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05, min_wait=3.0, move_time=None):
-    # move_time: the duration the arm move was commanded with. The arm is measured only
-    # after that much SIMULATED time has passed (plus a margin), then checked for
-    # stillness as before. Without it, the wall-clock limit ended the wait mid-move: at
-    # Gazebo's ~8% real-time rate, the 20s wait after the 3.0s grasp move is about 1.7s
-    # of simulated time, and in the lift the hand had covered only ~65% of its move
-    # after 20s. So "first move landed 94mm off" measured an arm still travelling, the
-    # corrections chased it, and the back-off-then-slide-in approach never happened.
-    if move_time is not None and hasattr(node, "wait_sim_time"):
-        node.wait_sim_time(move_time + 0.5)
+def settle(node, seconds, joints=ARM_JOINTS, thresh=0.05, min_wait=3.0):
     start = time.time()
     while time.time() - start < seconds:
         for _ in range(5):
@@ -464,7 +447,7 @@ def calibrate_contact_threshold(node):
     """
     print("Calibrating: closing the hand in free air to measure moving-finger noise...")
     node.send_arm_trajectory(REST_POSE, 4.0)
-    settle(node, 8.0, move_time=4.0)
+    settle(node, 8.0)
     node.command_fingers({g: 0.0 for g in FINGER_GROUPS}, 1.5,
                          thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_GRASP_ROLL)
     for _ in range(30):
@@ -637,7 +620,7 @@ def servo_to(node, target_pos, target_rot, tol, max_iters, label, on_step=None,
             print(f"  {label} {i}: {err * 1000:.0f}mm off, palm {ang:.1f}deg off, "
                   f"largest joint change {float(np.max(np.abs(dq))):.3f} rad")
         node.send_arm_trajectory(list(np.array(q) + dq), SERVO_MOVE_TIME)
-        settle(node, 6.0, min_wait=SERVO_MOVE_TIME + 0.3, move_time=SERVO_MOVE_TIME)
+        settle(node, 6.0, min_wait=SERVO_MOVE_TIME + 0.3)
         if on_step is not None and not on_step(f"{label} {i}"):
             return "knock", err, i
     real = node.real_wrist_position()
@@ -1167,7 +1150,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
                 "reason": reason}
 
     node.send_arm_trajectory(approach[0], 3.5)
-    settle(node, 12.0, move_time=3.5)
+    settle(node, 12.0)
     check_knock("the move to the approach pose")
 
     if method == "pick":
@@ -1179,7 +1162,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         # side by side with the servo approach, instead of being judged on runs where the
         # apple would not stay still. Knocks are logged but do not abort.
         node.send_arm_trajectory(grasp[0], 3.0)
-        settle(node, 20.0, move_time=3.0)
+        settle(node, 20.0)
         check_knock("the move to the grasp pose")
         real0 = node.real_wrist_position()
         if real0 is not None:
@@ -1202,7 +1185,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
                 break
             print(f"  correction {correction_i + 1}: err {err_now:.3f}m -> re-solving")
             node.send_arm_trajectory(again[0], 2.0)
-            settle(node, 15.0, move_time=2.0)
+            settle(node, 15.0)
             check_knock(f"correction {correction_i + 1}")
         real_end = node.real_wrist_position()
         if real_end is not None:
@@ -1223,7 +1206,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             return not_positioned(f"the move to pre-grasp needs a {jump:.2f} rad joint swing "
                                   f"(a configuration flip)")
         node.send_arm_trajectory(pregrasp[0], 2.5)
-        settle(node, 15.0, move_time=2.5)
+        settle(node, 15.0)
         check_knock("the move to the pre-grasp pose")
         real0 = node.real_wrist_position()
         if real0 is not None:
@@ -1667,6 +1650,14 @@ def main():
             result, why = "HELD BACK", r["reason"]
         elif not r.get("ok"):
             result, why = "UNREACHABLE", "the arm cannot reach the target"
+        elif rec.get("lift_sim_time") is not None and rec["lift_sim_time"] < 0.5:
+            # The simulation's own clock did not advance during the lift: Gazebo froze.
+            # One attempt was scored ARM STALLED with 0.0s of simulated time over 8s of
+            # watching, and the reset after it then waited out a full timeout.
+            result = "SIM FROZE"
+            why = (f"the simulation clock advanced only {rec['lift_sim_time']:.1f}s during "
+                   f"{rec.get('lift_time', 0):.0f}s of watching the lift -- nothing about "
+                   f"the grasp or the arm can be concluded")
         elif rec.get("empty"):
             hr, w1 = rec.get("hand_rise"), rec.get("wrist1_peak")
             result = "CONTROL"
@@ -1752,6 +1743,8 @@ def main():
     print("  shoulder/wrist_1 -- peak effort on those arm joints during the lift "
           "(limits 150Nm and 28Nm)")
     print("  ARM STALLED      -- the apple stayed in the hand, but the arm stopped lifting")
+    print("  SIM FROZE        -- Gazebo's clock stopped during the lift; the attempt tells us "
+          "nothing -- restart the simulation")
     print("  CONTROL          -- same attempt with the apple removed, to see if the arm "
           "stalls anyway")
     print("  slips after      -- how far the hand had risen when the apple started falling "

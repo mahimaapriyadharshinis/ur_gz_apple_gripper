@@ -1237,12 +1237,101 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         msg.points = [point]
         self.arm_pub.publish(msg)
 
-    def run_for_target(self, target_name, closing_policy_params=None):
-        """Run the full pick-and-place sequence for one apple at this node's
-        currently-configured station (self.robot_x/y/yaw). Returns a result dict.
-        closing_policy_params, if given, is passed straight through to
-        layer3_4_close_with_feedback (see its docstring) -- left as None, this
-        function's behavior is unchanged from before the learned-closing work."""
+    def run_working_grasp(self, target_name):
+        """Pick-and-place using the grasp validated in pocket_grasp_test.py.
+
+        That grasp picked all ten apples (29 of 30 attempts, the miss a frozen
+        simulation) with one set of settings. The pipeline calls the same attempt()
+        function the test uses rather than keeping a second copy here, so the two can
+        never drift apart. The vision layer (1) and grip plan (2) run once the hand is
+        at the grasp pose, where the gripper camera sees the apple, just before closing.
+        """
+        # Imported here, not at the top: pocket_grasp_test imports this module.
+        import pocket_grasp_test as working
+
+        if not working.CONTACT_THRESHOLD_BY_FINGER:
+            measured = working.calibrate_contact_threshold(self)
+            if measured is not None:
+                working.CONTACT_THRESHOLD_BY_FINGER = measured
+
+        seen = {}
+
+        def before_close(node):
+            vlm_result = self.layer1_vlm_analysis()
+            plan = self.layer2_imagination(vlm_result)
+            seen["vlm"], seen["plan"] = vlm_result, plan
+            # Step 1 of the integration: the vision result is recorded but does not yet
+            # change the grip, so this reproduces the tested grasp exactly.
+            return {}
+
+        r = working.attempt(self, target_name, working.PALM_TILT, working.PRESHAPE,
+                            working.LATERAL, "pick", 0.008, cap_thumb=True,
+                            finish_grasp_move=True, before_close=before_close)
+        rec = dict(working.REC)
+
+        if r.get("sim_frozen"):
+            outcome = "sim_frozen"
+        elif r.get("dead_sim"):
+            outcome = "dead_sim"
+        elif r.get("unsettled") or rec.get("settled") == "no":
+            outcome = "apple_would_not_settle"
+        elif not r.get("ok"):
+            outcome = "not_positioned"
+        elif r.get("lifted") is None:
+            outcome = "not_held"
+        else:
+            outcome = "held"
+        lifted_ok = outcome == "held"
+
+        placed_ok = False
+        pose_final_world = None
+        if lifted_ok:
+            placed_ok = self.layer_place()
+            for _ in range(10):
+                rclpy.spin_once(self, timeout_sec=0.2)
+            if self.target_pose is not None:
+                p = self.target_pose.position
+                pose_final_world = (p.x, p.y, p.z)
+                dist_to_crate = float(np.hypot(p.x - CRATE_WORLD_XY[0], p.y - CRATE_WORLD_XY[1]))
+                self.get_logger().info(
+                    f"[Place] apple settled {dist_to_crate:.2f}m from the crate centre")
+                if dist_to_crate > 0.3:
+                    placed_ok = False
+            if not placed_ok:
+                outcome = "not_placed"
+        success = lifted_ok and placed_ok
+
+        self.layer7_log_experience({
+            "timestamp": time.time(),
+            "object": target_name,
+            "grasp": "working",
+            "vlm_analysis": seen.get("vlm"),
+            "grip_plan": seen.get("plan"),
+            "squeeze": rec.get("squeeze"),
+            "contacts": rec.get("contacts"),
+            "apple_rose": rec.get("lift"),
+            "outcome": outcome,
+            "lifted_ok": lifted_ok,
+            "placed_ok": placed_ok,
+            "pose_final_world": pose_final_world,
+            "success": success,
+        })
+        self.get_logger().info(
+            f"=== RESULT for {target_name}: {'SUCCESS' if success else 'FAILED'} "
+            f"(outcome={outcome}, apple rose "
+            f"{'-' if rec.get('lift') is None else '%+.3fm' % rec['lift']}) ===")
+        return {"target": target_name, "success": success, "outcome": outcome,
+                "lifted_ok": lifted_ok, "placed_ok": placed_ok,
+                "apple_rose": rec.get("lift"), "vlm": seen.get("vlm")}
+
+    def run_for_target(self, target_name, closing_policy_params=None, grasp="working"):
+        """Run the full pick-and-place sequence for one apple. Returns a result dict.
+
+        By default this uses the validated grasp (run_working_grasp). The original
+        closing schedule below is kept for the learned-policy tools: passing
+        closing_policy_params, or grasp="legacy", runs it unchanged."""
+        if closing_policy_params is None and grasp == "working":
+            return self.run_working_grasp(target_name)
         self.set_target(target_name)
         self.wait_for(lambda: self.target_pose is not None, timeout=5.0)
         # Move the robot to its rest pose FIRST, then reset the apple -- not the other
@@ -1580,4 +1669,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # pocket_grasp_test imports this module by name. Register the running script under
+    # that name so the import reuses it instead of loading a second copy.
+    sys.modules.setdefault("full_layer_grasp", sys.modules[__name__])
     main()

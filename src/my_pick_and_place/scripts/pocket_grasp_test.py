@@ -1014,7 +1014,16 @@ def apple_xyz(node):
 
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
-            cap_thumb=False, empty=False, relax=False, finish_grasp_move=False):
+            cap_thumb=False, empty=False, relax=False, finish_grasp_move=False,
+            before_close=None):
+    """One full grasp attempt: reset, approach, close, lift, measure.
+
+    before_close, if given, is called as before_close(node) once the hand is in position
+    and just before the fingers close. It may return a dict of overrides; currently
+    "squeeze_extra" (rad past first contact) is honoured. This is how the main pipeline
+    lets the vision layer look at the apple from the grasp pose and set the grip.
+    Left as None, the attempt is exactly the tested one.
+    """
     global THUMB_ROLL
     THUMB_ROLL = THUMB_GRASP_ROLL
     palm_offset = PALM_OFFSET
@@ -1460,9 +1469,16 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         wx_, wy_ = APPLE_HOME_WORLD_XY[target_name]
         node.teleport_model(target_name, wx_, wy_ + 0.9, 0.06, settle_sec=1.0)
         print("  CONTROL: apple moved off the table -- the hand will close and lift empty")
+    squeeze_extra = SQUEEZE_EXTRA
+    if before_close is not None:
+        overrides = before_close(node) or {}
+        if overrides.get("squeeze_extra") is not None:
+            squeeze_extra = float(overrides["squeeze_extra"])
+    REC["squeeze"] = squeeze_extra
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_now,
-        radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW)
+        radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW,
+        squeeze_extra=squeeze_extra)
     n = sum(contacted.values())
     REC["contacts"] = n
     print(f"  fingers contacted: {n}/5")

@@ -1381,6 +1381,18 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         # Imported here, not at the top: pocket_grasp_test imports this module.
         import pocket_grasp_test as working
 
+        # Subscribe to this apple's pose topic. Without it no position ever arrives, and
+        # the apple reset reports "would not settle" six times without a single reading
+        # (the first pipeline run skipped both attempts exactly that way).
+        self.set_target(target_name)
+        if not self.wait_for(lambda: self.target_pose is not None, timeout=10.0):
+            self.get_logger().error(
+                f"No pose received on /model/{target_name}/pose within 10s -- is the pose "
+                f"bridge running (start_everything.sh)?")
+            return {"target": target_name, "success": False, "outcome": "no_apple_pose",
+                    "lifted_ok": False, "placed_ok": False, "apple_rose": None,
+                    "crate_distance": None, "vlm": None}
+
         if not working.CONTACT_THRESHOLD_BY_FINGER:
             measured = working.calibrate_contact_threshold(self)
             if measured is not None:

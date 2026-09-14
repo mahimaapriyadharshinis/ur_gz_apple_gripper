@@ -1668,6 +1668,15 @@ def main():
     if target_name not in APPLE_HOME_WORLD_XY:
         print(f"Unknown target {target_name}")
         return
+    # Optional second argument: how many of the CASES to run (e.g. 2 for a quicker check
+    # across many apples). Default: all of them.
+    cases = CASES
+    if len(sys.argv) > 2:
+        try:
+            cases = CASES[:max(1, int(sys.argv[2]))]
+        except ValueError:
+            print(f"Second argument must be a number of attempts, got {sys.argv[2]!r}")
+            return
 
     print(f"Target {target_name}. Aiming the CLOSED fingertip centroid "
           f"{CLOSED_CENTROID_HAND_FRAME} at the apple, not the wrist or the open hand.")
@@ -1699,7 +1708,7 @@ def main():
 
     results = []
     records = []
-    for pt, ps, lat, po, dr, cap, emp, rel, fin in CASES:
+    for pt, ps, lat, po, dr, cap, emp, rel, fin in cases:
         r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin)
         results.append(r)
         records.append(dict(REC))
@@ -1847,7 +1856,7 @@ def main():
           f"more counts as held")
 
     picked = sum(1 for _, _, result, _ in rows if result == "PICKED")
-    print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS.")
+    print(f"\nPICKED {picked} OF {len(rows)} ATTEMPTS ON {target_name}.")
     lifts = [rec["lift"] for _, rec, _, _ in rows
              if rec.get("lift") is not None and not rec.get("empty")]
     if lifts:

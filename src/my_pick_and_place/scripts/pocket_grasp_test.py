@@ -1955,7 +1955,20 @@ def main():
     recentre_mode = "off"
     thumb_arg = "spike"
     spread_arg = "hold"
+    lateral_list = None
     for arg in sys.argv[2:]:
+        # lateral=0.025 or lateral=0.025,0.035: aim this far across the hand (m) instead of
+        # LATERAL; with several values the attempts cycle through them in order.
+        if arg.startswith("lateral="):
+            try:
+                lateral_list = [float(v) for v in arg.split("=", 1)[1].split(",") if v]
+            except ValueError:
+                print(f"lateral= needs metres, e.g. lateral=0.025,0.035, got {arg!r}")
+                return
+            if not lateral_list:
+                print(f"lateral= needs at least one value, got {arg!r}")
+                return
+            continue
         # spread=hold|zero|ab: leave the finger spread joints uncommanded (hold, the tested
         # behaviour) or command them to 0.0. "ab" runs the first half of the attempts on
         # hold and the second half on zero -- once commanded they cannot go back to hold.
@@ -2037,11 +2050,15 @@ def main():
         tm = thumb_arg if thumb_arg != "ab" else ("steady" if case_i % 2 == 0 else "spike")
         zero = spread_arg == "zero" or (spread_arg == "ab" and case_i >= len(cases) // 2)
         node.finger_yaw = 0.0 if zero else None
+        if lateral_list is not None:
+            lat = lateral_list[case_i % len(lateral_list)]
         print(f"\n(re-centre before closing: {'ON' if rc else 'off'}; thumb preload: {tm}; "
-              f"finger spread: {'commanded 0.0' if zero else 'uncommanded'})")
+              f"finger spread: {'commanded 0.0' if zero else 'uncommanded'}; "
+              f"lateral aim: {lat * 1000:+.0f}mm)")
         r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin,
                     before_close=before_close, recentre=rc, thumb_mode=tm)
         REC["spread"] = "zero" if zero else "hold"
+        REC["lateral"] = lat
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -2122,14 +2139,16 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  {'recentre':>8}  "
-          f"{'apple still':>11}  {'1st move off':>12}  "
+    print(f"{'#':>2}  {'lateral':>7}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  "
+          f"{'recentre':>8}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
         opp = rec.get("opposition")
         opp_s = f"{opp:.0f}" if isinstance(opp, (int, float)) else "-"
-        print(f"{idx:>2}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  {opp_s:>9}  "
-              f"{rec.get('recentre', '-'):>8}  "
+        lat_v = rec.get("lateral")
+        lat_s = f"{lat_v * 1000:+.0f}mm" if isinstance(lat_v, (int, float)) else "-"
+        print(f"{idx:>2}  {lat_s:>7}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  "
+              f"{opp_s:>9}  {rec.get('recentre', '-'):>8}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")

@@ -390,6 +390,12 @@ GRIP_HOLD_NM = 0.30
 # 3-4 fingers and a thumb at 3-8Nm. Light apples picked with 1 finger + thumb 1.5Nm, so
 # the check asks for 2 fingers and a thumb at 1.5Nm, and only ever ADDS squeeze -- which
 # the squeeze sweep measured as strictly better, moving the apple 1-10mm at most.
+# Re-centring the hand on the apple's measured position before closing (attempt's
+# recentre option): only when the apple has been pushed more than RECENTRE_MIN_M, as a
+# RECENTRE_MOVE_S-second move in simulated time.
+RECENTRE_MIN_M = 0.005
+RECENTRE_MOVE_S = 2.0
+
 GRIP_MIN_FINGERS = 2
 GRIP_MIN_THUMB_NM = 1.5
 GRIP_SETTLE_SIM_S = 0.3     # simulated seconds for the fingers to follow each command
@@ -1129,7 +1135,7 @@ def apple_xyz(node):
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             cap_thumb=False, empty=False, relax=False, finish_grasp_move=False,
-            before_close=None):
+            before_close=None, recentre=False):
     """One full grasp attempt: reset, approach, close, lift, measure.
 
     before_close, if given, is called as before_close(node) once the hand is in position
@@ -1149,6 +1155,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     CAP_THUMB = cap_thumb
     REC["cap"] = "on" if cap_thumb else "off"
     REC["empty"] = empty
+    REC["recentre"] = "on" if recentre else "off"
     REC["relax"] = "on" if relax else "off"
     REC["finish"] = "yes" if finish_grasp_move else "no"
     label = (f"{'EMPTY-HAND CONTROL' if empty else 'GRASP'}   "
@@ -1392,6 +1399,40 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         if real_end is not None:
             REC["pre_err"] = float(np.linalg.norm(np.array(real_end) - wrist_target))
         REC["steps"] = "direct"
+        if recentre:
+            # Re-centre the hand on where the apple actually is. The fingertips brush the
+            # apple on the way in and push it sideways -- 1mm for apple_01, 8-12mm for
+            # apple_06, 15-22mm for apple_10 -- and the grasp then closes around where it
+            # was. apple_10 picked with the thumb 112-115deg across from the fingers and
+            # failed 14 of 14 on 15 Sep at 87-109deg, with only one finger pressing.
+            for _ in range(10):
+                rclpy.spin_once(node, timeout_sec=0.05)
+            live = np.array(live_apple_local(node, apple_local), dtype=float)
+            shift = np.array([live[0] - apple_local[0], live[1] - apple_local[1], 0.0])
+            REC["recentre_shift"] = float(np.linalg.norm(shift))
+            print(f"  re-centre: the apple is {np.linalg.norm(shift) * 1000:.0f}mm "
+                  f"(x {shift[0] * 1000:+.0f}, y {shift[1] * 1000:+.0f}) from where the hand aimed")
+            if np.linalg.norm(shift) > RECENTRE_MIN_M:
+                new_target = np.array(wrist_target) + shift
+                here = arm_now(node)
+                sol = solve_ik(node.chain, list(new_target), target_rotation=rot, current=here)
+                jump = joint_jump(sol[0], here) if sol is not None else None
+                if sol is None or jump > FINE_MOVE_MAX_JUMP:
+                    print("  re-centre: skipped -- "
+                          + ("unreachable" if sol is None else f"needs a {jump:.2f} rad joint swing"))
+                else:
+                    t_rc = current_sim_time(node)
+                    node.send_arm_trajectory(sol[0], RECENTRE_MOVE_S)
+                    wait_until_sim(node, t_rc, RECENTRE_MOVE_S + 0.5)
+                    settle(node, 10.0)
+                    check_knock("the re-centre move")
+                    wrist_target = new_target
+                    apple_local = live
+                    real_rc = node.real_wrist_position()
+                    if real_rc is not None:
+                        print(f"  re-centre: hand moved {np.linalg.norm(shift) * 1000:.0f}mm; wrist now "
+                              f"{np.linalg.norm(np.array(real_rc) - new_target) * 1000:.0f}mm from "
+                              f"the re-centred target")
         now = apple_xyz(node)
         if before is not None and now is not None:
             REC["apple_moved"] = float(np.linalg.norm(now - before))
@@ -1832,7 +1873,16 @@ def main():
     # across many apples). Default: all of them.
     cases = CASES
     squeeze_override = None
+    recentre_mode = "off"
     for arg in sys.argv[2:]:
+        # recentre=on|off|ab: re-centre the hand on the apple before closing; "ab"
+        # alternates on/off attempt by attempt so both are compared in one run.
+        if arg.startswith("recentre="):
+            recentre_mode = arg.split("=", 1)[1]
+            if recentre_mode not in ("on", "off", "ab"):
+                print(f"recentre= must be on, off or ab, got {arg!r}")
+                return
+            continue
         # squeeze=0.08: squeeze this far (rad) past first contact instead of the tested
         # SQUEEZE_EXTRA. Used to find the range the vision layer may choose from.
         if arg.startswith("squeeze="):
@@ -1883,9 +1933,11 @@ def main():
 
     results = []
     records = []
-    for pt, ps, lat, po, dr, cap, emp, rel, fin in cases:
+    for case_i, (pt, ps, lat, po, dr, cap, emp, rel, fin) in enumerate(cases):
+        rc = recentre_mode == "on" or (recentre_mode == "ab" and case_i % 2 == 0)
+        print(f"\n(re-centre before closing: {'ON' if rc else 'off'})")
         r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin,
-                    before_close=before_close)
+                    before_close=before_close, recentre=rc)
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -1966,10 +2018,10 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'wait move':>10}  {'apple still':>11}  {'1st move off':>12}  "
+    print(f"{'#':>2}  {'recentre':>10}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
-        print(f"{idx:>2}  {rec.get('finish', '-'):>10}  "
+        print(f"{idx:>2}  {rec.get('recentre', '-'):>10}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")
@@ -2002,8 +2054,8 @@ def main():
         print(f"  {idx}. [thumb cap {rec.get('cap', '-')}] {result}: {why}")
 
     print("\nHOW TO READ THIS")
-    print("  wait move        -- yes: the grasp move was allowed to finish (in simulated time) "
-          "before the wrist was measured and corrected")
+    print("  recentre         -- on: the hand was shifted onto the apple's measured position "
+          "before closing")
     print("  thumb cap        -- on: the thumb is backed off until it pushes no more than "
           f"{THUMB_PRELOAD_FORCE:.1f}Nm")
     print(f"  hand rose / took -- how far the hand actually rose, and how long it took "

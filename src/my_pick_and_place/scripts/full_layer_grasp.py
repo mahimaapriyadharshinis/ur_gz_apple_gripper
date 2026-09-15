@@ -1063,6 +1063,14 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         if thumb_roll is not None:
             all_names.append('R_Thumb_Roll')
             all_positions.append(float(thumb_roll))
+        # The four finger spread joints are in dexhand_controller but are left out of
+        # commands unless finger_yaw is set on the node: with allow_partial_joints_goal
+        # they then hold whatever angle they had when the controller started.
+        finger_yaw = getattr(self, "finger_yaw", None)
+        if finger_yaw is not None:
+            for j_name in ("R_Index_Yaw", "R_Middle_Yaw", "R_Ring_Yaw", "R_Pinky_Yaw"):
+                all_names.append(j_name)
+                all_positions.append(float(finger_yaw))
         for g in FINGER_GROUPS:
             for j_name in FINGER_SECONDARY_JOINTS[g]:
                 all_names.append(j_name)

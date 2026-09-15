@@ -491,6 +491,23 @@ CAMERA_LINK = "gripper_camera_link"
 CAMERA_HALF_EXTENTS = np.array([0.02, 0.02, 0.01])
 
 
+SPREAD_JOINTS = ["R_Index_Yaw", "R_Middle_Yaw", "R_Ring_Yaw", "R_Pinky_Yaw"]
+
+
+def print_finger_spread(node, when):
+    """Log the four finger spread (Yaw) joints. They are in dexhand_controller but were
+    never commanded (allow_partial_joints_goal), so they hold whatever angle they had
+    when the controller started -- which can differ between Gazebo sessions."""
+    vals = {j: node.latest_joint_state.get(j, (None, None, None))[0] for j in SPREAD_JOINTS}
+    REC["spread_joints"] = vals
+    cmd = getattr(node, "finger_yaw", None)
+    print(f"  finger spread joints {when} (commanded: "
+          f"{'never' if cmd is None else f'{cmd:+.3f}'}): "
+          + ", ".join(f"{j[2:-4]}={v:+.4f}" if v is not None else f"{j[2:-4]}=?"
+                      for j, v in vals.items()))
+    return vals
+
+
 def camera_clearances(node):
     """Each fingertip's distance to the camera's collision box surface, in metres.
 
@@ -1630,6 +1647,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         print(f"  thumb yaw commanded {THUMB_GRASP_YAW:+.2f}, "
               f"actually at {real_yaw:+.2f}"
               + ("" if drift < 0.05 else f"  <-- OFF BY {drift:.2f} rad, being pushed back"))
+    print_finger_spread(node, "at the grasp pose, before closing")
 
     # Which fingers are actually within reach of the apple BEFORE closing starts?
     # The run that prompted this had 5/5 "contacts" and yet finished with index, middle
@@ -1936,7 +1954,17 @@ def main():
     squeeze_override = None
     recentre_mode = "off"
     thumb_arg = "spike"
+    spread_arg = "hold"
     for arg in sys.argv[2:]:
+        # spread=hold|zero|ab: leave the finger spread joints uncommanded (hold, the tested
+        # behaviour) or command them to 0.0. "ab" runs the first half of the attempts on
+        # hold and the second half on zero -- once commanded they cannot go back to hold.
+        if arg.startswith("spread="):
+            spread_arg = arg.split("=", 1)[1]
+            if spread_arg not in ("hold", "zero", "ab"):
+                print(f"spread= must be hold, zero or ab, got {arg!r}")
+                return
+            continue
         # thumb=spike|steady|ab: how the thumb preload decides it is pressing (see
         # THUMB_MODE); "ab" alternates steady/spike attempt by attempt.
         if arg.startswith("thumb="):
@@ -1989,6 +2017,7 @@ def main():
     measured = calibrate_contact_threshold(node)
     if measured is not None:
         CONTACT_THRESHOLD_BY_FINGER = measured
+    print_finger_spread(node, "at startup")
 
     if not simulation_alive(node):
         print()
@@ -2006,9 +2035,13 @@ def main():
     for case_i, (pt, ps, lat, po, dr, cap, emp, rel, fin) in enumerate(cases):
         rc = recentre_mode == "on" or (recentre_mode == "ab" and case_i % 2 == 0)
         tm = thumb_arg if thumb_arg != "ab" else ("steady" if case_i % 2 == 0 else "spike")
-        print(f"\n(re-centre before closing: {'ON' if rc else 'off'}; thumb preload: {tm})")
+        zero = spread_arg == "zero" or (spread_arg == "ab" and case_i >= len(cases) // 2)
+        node.finger_yaw = 0.0 if zero else None
+        print(f"\n(re-centre before closing: {'ON' if rc else 'off'}; thumb preload: {tm}; "
+              f"finger spread: {'commanded 0.0' if zero else 'uncommanded'})")
         r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin,
                     before_close=before_close, recentre=rc, thumb_mode=tm)
+        REC["spread"] = "zero" if zero else "hold"
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -2089,13 +2122,14 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'thumb':>6}  {'thumb deg':>9}  {'recentre':>8}  {'apple still':>11}  "
-          f"{'1st move off':>12}  "
+    print(f"{'#':>2}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  {'recentre':>8}  "
+          f"{'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
         opp = rec.get("opposition")
         opp_s = f"{opp:.0f}" if isinstance(opp, (int, float)) else "-"
-        print(f"{idx:>2}  {rec.get('thumb', '-'):>6}  {opp_s:>9}  {rec.get('recentre', '-'):>8}  "
+        print(f"{idx:>2}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  {opp_s:>9}  "
+              f"{rec.get('recentre', '-'):>8}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")

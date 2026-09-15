@@ -118,6 +118,7 @@ AIM_DEPTH = 0.120
 # below the apple's widest circle.
 PALM_TILT = np.radians(45.0)
 PALM_OFFSET = 0.0900
+TESTED_PALM_OFFSET = PALM_OFFSET
 LATERAL = 0.015
 
 # THE FIRST COMPLETE GRASP IN THIS PROJECT, and the configuration that produced it.
@@ -1992,7 +1993,28 @@ def main():
     spread_arg = "hold"
     lateral_list = None
     pace_list = None
+    variants = None
     for arg in sys.argv[2:]:
+        # variants=drop:0.016/preshape:0.3/drop:0.016+tilt:55 -- one grasp change per
+        # attempt, cycling in order. Keys: drop (m lower), preshape (rad), lateral (m),
+        # offset (palm back-off, m), tilt (deg). Anything not named keeps its tested value.
+        if arg.startswith("variants="):
+            keys = {"drop", "preshape", "lateral", "offset", "tilt"}
+            variants = []
+            try:
+                for chunk in arg.split("=", 1)[1].split("/"):
+                    v = {}
+                    for kv in chunk.split("+"):
+                        k, val = kv.split(":")
+                        if k not in keys:
+                            raise ValueError(k)
+                        v[k] = float(val)
+                    variants.append(v)
+            except ValueError as e:
+                print(f"variants= format is key:value+key:value/..., keys {sorted(keys)}; "
+                      f"problem: {e}")
+                return
+            continue
         # pace=0.04 or pace=0.04,0.02 or pace=msgs,0.04: how long each closing step waits,
         # in seconds of simulated time ("msgs" = the tested message-count pacing); with
         # several values the attempts cycle through them.
@@ -2054,7 +2076,8 @@ def main():
                 return
             continue
         try:
-            cases = CASES[:max(1, int(arg))]
+            n_cases = max(1, int(arg))
+            cases = [CASES[i % len(CASES)] for i in range(n_cases)]
         except ValueError:
             print(f"Arguments: [number of attempts] [squeeze=RAD], got {arg!r}")
             return
@@ -2076,7 +2099,7 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    global CONTACT_THRESHOLD_BY_FINGER, CLOSE_STEP_SIM_S
+    global CONTACT_THRESHOLD_BY_FINGER, CLOSE_STEP_SIM_S, PALM_OFFSET
     measured = calibrate_contact_threshold(node)
     if measured is not None:
         CONTACT_THRESHOLD_BY_FINGER = measured
@@ -2102,6 +2125,20 @@ def main():
         node.finger_yaw = 0.0 if zero else None
         if lateral_list is not None:
             lat = lateral_list[case_i % len(lateral_list)]
+        PALM_OFFSET = TESTED_PALM_OFFSET
+        variant_s = "tested"
+        if variants:
+            var = variants[case_i % len(variants)]
+            dr = var.get("drop", dr)
+            ps = var.get("preshape", ps)
+            lat = var.get("lateral", lat)
+            if "tilt" in var:
+                pt = np.radians(var["tilt"])
+            PALM_OFFSET = var.get("offset", TESTED_PALM_OFFSET)
+            variant_s = "+".join(f"{k}:{v:g}" for k, v in var.items())
+        print(f"\n(grasp variant: {variant_s} -> tilt {np.degrees(pt):.0f}deg, "
+              f"lowered {dr * 1000:.0f}mm, pre-shape {ps:.2f}, lateral {lat * 1000:+.0f}mm, "
+              f"back-off {PALM_OFFSET:.3f}m)")
         if pace_list is not None:
             CLOSE_STEP_SIM_S = pace_list[case_i % len(pace_list)]
         pace_s = "msgs" if CLOSE_STEP_SIM_S is None else f"{CLOSE_STEP_SIM_S * 1000:.0f}ms"
@@ -2113,6 +2150,7 @@ def main():
                     before_close=before_close, recentre=rc, thumb_mode=tm)
         REC["spread"] = "zero" if zero else "hold"
         REC["lateral"] = lat
+        REC["variant"] = variant_s
         REC["pace"] = pace_s
         results.append(r)
         records.append(dict(REC))
@@ -2194,7 +2232,7 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'pace':>5}  {'lateral':>7}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  "
+    print(f"{'#':>2}  {'variant':<24}  {'pace':>5}  {'lateral':>7}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  "
           f"{'recentre':>8}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
@@ -2202,7 +2240,7 @@ def main():
         opp_s = f"{opp:.0f}" if isinstance(opp, (int, float)) else "-"
         lat_v = rec.get("lateral")
         lat_s = f"{lat_v * 1000:+.0f}mm" if isinstance(lat_v, (int, float)) else "-"
-        print(f"{idx:>2}  {rec.get('pace', '-'):>5}  {lat_s:>7}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  "
+        print(f"{idx:>2}  {rec.get('variant', '-'):<24}  {rec.get('pace', '-'):>5}  {lat_s:>7}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  "
               f"{opp_s:>9}  {rec.get('recentre', '-'):>8}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "

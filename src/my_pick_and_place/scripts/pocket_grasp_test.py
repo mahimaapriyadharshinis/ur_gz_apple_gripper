@@ -142,7 +142,13 @@ LATERAL = 0.015
 # One success out of four attempts is not yet a reliable grasp. These four cases are
 # identical so the next run measures how often it actually works.
 SQUEEZE = 0.12
-PRESHAPE = 0.4
+# Pre-shape 0.25 and grasp lowered 12mm (GRASP_DROP), settled 15 Sep. The old 0.4 / 8mm
+# picked apple_10 (12cm) on 14 Sep but 0 of 24 on 15 Sep: the half-closed fingers pushed
+# the big apple 13mm sideways while closing and index/middle lost it. A sweep of height x
+# opening gave 0.25 / 12mm: apple_10 4 of 4 (thumb 116-117deg, apple slid 1mm while
+# closing, +14.9-15.0cm); apple_01 3 of 3 and apple_06 3 of 3 unchanged.
+PRESHAPE = 0.25
+GRASP_DROP = 0.012
 
 # Thumb roll for the current attempt. R_Thumb_Roll (+/-0.349 rad) has been held at 0.0
 # for this entire project; set per attempt from CASES.
@@ -170,10 +176,10 @@ CASES = [
     # Attempt 1, which had failed in every previous run, picked.
     #
     # Now on for every attempt, to confirm it holds over four more.
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
-    (PALM_TILT, PRESHAPE, LATERAL, "pick", 0.008, True, False, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", GRASP_DROP, True, False, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", GRASP_DROP, True, False, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", GRASP_DROP, True, False, False, True),
+    (PALM_TILT, PRESHAPE, LATERAL, "pick", GRASP_DROP, True, False, False, True),
 ]
 
 REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]

@@ -1471,7 +1471,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             return {"squeeze_extra": squeeze}
 
         r = working.attempt(self, target_name, working.PALM_TILT, working.PRESHAPE,
-                            working.LATERAL, "pick", 0.008, cap_thumb=True,
+                            working.LATERAL, "pick", working.GRASP_DROP, cap_thumb=True,
                             finish_grasp_move=True, before_close=before_close)
         rec = dict(working.REC)
 

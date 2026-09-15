@@ -905,6 +905,8 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     # close against. drive() stops a finger the moment it feels the apple, so this is a
     # light backstop, not a squeeze.
     print("  thumb closing to first contact, to give the fingers a backstop...")
+    close_sim_start = current_sim_time(node)
+    close_wall_start = time.time()
     drive(["R_Thumb"], MAX_PITCH_CEILING)
     # First contact alone is far too light to oppose anything: measured at 0.284Nm and
     # 0.103Nm while the fingers then pressed at 1.5-5.9Nm, so the "backstop" simply gave
@@ -985,6 +987,28 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
             for g in FINGER_GROUPS:
                 _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
                 peak[g] = max(peak[g], abs(eff or 0.0))
+
+    # How the closing ran in time, and how far each finger is commanded PAST where it
+    # actually stands. The same code picked apple_10 4/4 at 0.05-0.07x real time and 0/2
+    # at 0.11-0.12x, with the hand arriving the same way, so the squeeze itself differs
+    # with simulation speed. A position-controlled finger only presses as hard as its
+    # command is ahead of it: this is that lead, measured rather than assumed.
+    close_sim_end = current_sim_time(node)
+    if close_sim_start is not None and close_sim_end is not None:
+        sim_used = close_sim_end - close_sim_start
+        wall_used = time.time() - close_wall_start
+        REC["close_sim_s"] = sim_used
+        print(f"  closing + squeeze took {sim_used:.2f}s of simulated time in {wall_used:.0f}s "
+              f"({sim_used / max(wall_used, 1e-6):.3f}x real time)")
+    lead = {}
+    for g in FINGER_GROUPS:
+        actual = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
+        if actual is not None:
+            lead[g] = current[g] - actual
+    if lead:
+        REC["squeeze_lead"] = lead
+        print("  command ahead of actual finger position (what makes it press): "
+              + ", ".join(f"{g.replace('R_', '')}={v:+.3f}rad" for g, v in lead.items()))
 
     after_squeeze = apple_xyz(node)
     if (any(contacted.values()) and before_squeeze is not None

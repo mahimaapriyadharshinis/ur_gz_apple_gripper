@@ -385,6 +385,17 @@ CAP_THUMB = False
 # threshold (~0.07Nm) sits inside that idle band, so it overstated gripping.
 GRIP_HOLD_NM = 0.30
 
+# Grip check before lifting (see close_and_measure). Every apple_10 failure on 15 Sep
+# started its lift with at most 1 finger and a thumb at 0-1.5Nm pressing; its picks had
+# 3-4 fingers and a thumb at 3-8Nm. Light apples picked with 1 finger + thumb 1.5Nm, so
+# the check asks for 2 fingers and a thumb at 1.5Nm, and only ever ADDS squeeze -- which
+# the squeeze sweep measured as strictly better, moving the apple 1-10mm at most.
+GRIP_MIN_FINGERS = 2
+GRIP_MIN_THUMB_NM = 1.5
+GRIP_SETTLE_SIM_S = 0.3     # simulated seconds for the fingers to follow each command
+GRIP_EXTRA_STEP = 0.02      # rad added per check to digits that are not pressing
+GRIP_EXTRA_MAX = 0.10       # most extra squeeze the check may add
+
 # During the lift, how often to sample, for how long, and how far the apple must fall
 # behind the hand before it counts as slipping.
 LIFT_SAMPLE_S = 0.2
@@ -1029,6 +1040,49 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                    for j in joints)
 
     holding = {g: finger_load(g) for g in FINGER_GROUPS}
+
+    # Grip check before lifting. The squeeze commands a fixed amount and the lift used to
+    # follow regardless of what the hand was actually doing. apple_10 (0.70kg) then failed
+    # 10 of 10 attempts on 15 Sep with the fingers commanded the full squeeze past their
+    # real position but reading 0.01-0.02Nm (index, middle, pinky) and only one finger plus
+    # the thumb pressing at lift start; its earlier picks had 3-4 fingers at 1.5Nm and the
+    # thumb at 3-8Nm. Wait for the fingers in simulated time, measure, and squeeze further
+    # only the contacted digits that are not pressing, until the grip is firm.
+    fingers_only = [g for g in FINGER_GROUPS if g != "R_Thumb"]
+
+    def firm(h):
+        pressing = sum(1 for g in fingers_only if h[g] > GRIP_HOLD_NM)
+        return pressing >= GRIP_MIN_FINGERS and h["R_Thumb"] >= GRIP_MIN_THUMB_NM
+
+    t_catch = current_sim_time(node)
+    wait_until_sim(node, t_catch, GRIP_SETTLE_SIM_S)
+    holding = {g: finger_load(g) for g in FINGER_GROUPS}
+    extra_used = 0.0
+    tries = 0
+    while not firm(holding) and extra_used < GRIP_EXTRA_MAX - 1e-9:
+        tries += 1
+        extra_used += GRIP_EXTRA_STEP
+        slack = [g for g in FINGER_GROUPS if contacted[g] and (
+            holding[g] < (GRIP_MIN_THUMB_NM if g == "R_Thumb" else GRIP_HOLD_NM))]
+        for g in slack:
+            current[g] = min(current[g] + GRIP_EXTRA_STEP, MAX_PITCH_CEILING)
+        node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
+                             thumb_roll=THUMB_ROLL)
+        t_step = current_sim_time(node)
+        wait_until_sim(node, t_step, GRIP_SETTLE_SIM_S)
+        holding = {g: finger_load(g) for g in FINGER_GROUPS}
+        for g in FINGER_GROUPS:
+            peak[g] = max(peak[g], holding[g])
+        print(f"  grip check {tries}: squeezed {', '.join(s.replace('R_', '') for s in slack) or 'nothing'} "
+              f"a further {GRIP_EXTRA_STEP:.3f} rad -> "
+              + ", ".join("%s=%.2f" % (g.replace('R_', ''), holding[g]) for g in FINGER_GROUPS))
+    REC["grip_extra"] = extra_used
+    REC["grip_firm"] = firm(holding)
+    pressing_now = sum(1 for g in fingers_only if holding[g] > GRIP_HOLD_NM)
+    print(f"  grip check: {pressing_now}/4 fingers pressing, thumb {holding['R_Thumb']:.2f}Nm -- "
+          + ("FIRM" if REC["grip_firm"] else
+             f"still NOT firm after {extra_used:.3f} rad extra squeeze"))
+
     REC["holding"] = sum(1 for g in FINGER_GROUPS if holding[g] > GRIP_HOLD_NM)
     n_sq = sum(1 for g in FINGER_GROUPS if contacted[g])
     print(f"  after squeeze ({n_sq}/5 fingers had contact to squeeze), holding force "

@@ -391,6 +391,14 @@ CAP_THUMB = False
 THUMB_MODE = "spike"
 THUMB_STEP_SIM_S = 0.10
 
+# How long each closing step (finger, thumb preload, back-off, squeeze) waits before the
+# next command. None: CHECKS_PER_STEP incoming messages of ANY subscription, the tested
+# behaviour -- but the node also receives camera images, whose rate follows PC load, so
+# the fingers close at a different speed in simulated time from session to session
+# (closing + squeeze measured 0.42-1.77s simulated across identical apple_10 attempts on
+# 15 Sep). A number: wait that many seconds of SIMULATED time per step.
+CLOSE_STEP_SIM_S = None
+
 # A finger counts as still gripping only above this. The idle floor measured 0.01-0.09Nm
 # across all three joints; genuinely loaded fingers read 0.87-1.50Nm. The contact
 # threshold (~0.07Nm) sits inside that idle band, so it overstated gripping.
@@ -922,6 +930,37 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 if pos is not None:
                     current[g] = pos
 
+    step_count = [0]
+
+    def step_wait(on_sample=None, stop=None):
+        """Wait out one closing step; returns True if stop() became true."""
+        step_count[0] += 1
+        if CLOSE_STEP_SIM_S is None:
+            for _ in range(CHECKS_PER_STEP):
+                rclpy.spin_once(node, timeout_sec=0.08)
+                if on_sample:
+                    on_sample()
+                if stop and stop():
+                    return True
+            return False
+        start = getattr(node, "joint_stamp", None)
+        wall = time.time()
+        spins = 0
+        while time.time() - wall < 30.0:
+            rclpy.spin_once(node, timeout_sec=0.05)
+            spins += 1
+            if on_sample:
+                on_sample()
+            if stop and stop():
+                return True
+            now = getattr(node, "joint_stamp", None)
+            if start is None or now is None:
+                if spins >= CHECKS_PER_STEP:
+                    return False
+            elif now - start >= CLOSE_STEP_SIM_S:
+                return False
+        return False
+
     def drive(groups, limit):
         steps = int((limit - start_pitch) / CLOSE_STEP) + 2
         for _ in range(steps):
@@ -932,9 +971,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                     moved = True
             node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                                  thumb_roll=THUMB_ROLL)
-            for _ in range(CHECKS_PER_STEP):
-                rclpy.spin_once(node, timeout_sec=0.08)
-                sample()
+            step_wait(on_sample=sample)
             if not moved or all(contacted[g] for g in groups):
                 break
 
@@ -1023,17 +1060,11 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                                      MAX_PITCH_CEILING)
             node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                                  thumb_roll=THUMB_ROLL)
-            stop = False
-            for _ in range(CHECKS_PER_STEP):
-                rclpy.spin_once(node, timeout_sec=0.08)
-                _, _, e = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
-                if abs(e or 0.0) >= THUMB_PRELOAD_FORCE:
-                    stop = True
-                    break
-            if stop:
+            if step_wait(stop=lambda: abs(node.latest_joint_state.get(
+                    "R_Thumb_Pitch", (0, 0, 0))[2] or 0.0) >= THUMB_PRELOAD_FORCE):
                 break
-        for _ in range(CHECKS_PER_STEP * 2):
-            rclpy.spin_once(node, timeout_sec=0.08)
+        step_wait()
+        step_wait()
         _, _, teff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
         raw = abs(teff or 0.0)
         if CAP_THUMB and raw > THUMB_PRELOAD_FORCE:
@@ -1047,8 +1078,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 current["R_Thumb"] = max(current["R_Thumb"] - THUMB_BACKOFF_STEP, 0.0)
                 node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                                      thumb_roll=THUMB_ROLL)
-                for _ in range(CHECKS_PER_STEP):
-                    rclpy.spin_once(node, timeout_sec=0.08)
+                step_wait()
                 _, _, teff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
                 raw = abs(teff or 0.0)
             print(f"  thumb backed off {backed:.3f} rad to hold its preload cap")
@@ -1079,11 +1109,12 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 current[g] = min(current[g] + SQUEEZE_STEP, MAX_PITCH_CEILING)
         node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                              thumb_roll=THUMB_ROLL)
-        for _ in range(CHECKS_PER_STEP):
-            rclpy.spin_once(node, timeout_sec=0.08)
+
+        def track_peak():
             for g in FINGER_GROUPS:
                 _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
                 peak[g] = max(peak[g], abs(eff or 0.0))
+        step_wait(on_sample=track_peak)
 
     # How the closing ran in time, and how far each finger is commanded PAST where it
     # actually stands. The same code picked apple_10 4/4 at 0.05-0.07x real time and 0/2
@@ -1095,8 +1126,12 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
         sim_used = close_sim_end - close_sim_start
         wall_used = time.time() - close_wall_start
         REC["close_sim_s"] = sim_used
+        per_step = sim_used / max(step_count[0], 1)
+        REC["close_step_sim_s"] = per_step
         print(f"  closing + squeeze took {sim_used:.2f}s of simulated time in {wall_used:.0f}s "
-              f"({sim_used / max(wall_used, 1e-6):.3f}x real time)")
+              f"({sim_used / max(wall_used, 1e-6):.3f}x real time), {step_count[0]} steps, "
+              f"{per_step * 1000:.1f}ms simulated per step "
+              f"({'paced by messages' if CLOSE_STEP_SIM_S is None else 'paced in sim time'})")
     lead = {}
     for g in FINGER_GROUPS:
         actual = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
@@ -1956,7 +1991,22 @@ def main():
     thumb_arg = "spike"
     spread_arg = "hold"
     lateral_list = None
+    pace_list = None
     for arg in sys.argv[2:]:
+        # pace=0.04 or pace=0.04,0.02 or pace=msgs,0.04: how long each closing step waits,
+        # in seconds of simulated time ("msgs" = the tested message-count pacing); with
+        # several values the attempts cycle through them.
+        if arg.startswith("pace="):
+            try:
+                pace_list = [None if v == "msgs" else float(v)
+                             for v in arg.split("=", 1)[1].split(",") if v]
+            except ValueError:
+                print(f"pace= needs seconds or msgs, e.g. pace=0.04,0.02, got {arg!r}")
+                return
+            if not pace_list:
+                print(f"pace= needs at least one value, got {arg!r}")
+                return
+            continue
         # lateral=0.025 or lateral=0.025,0.035: aim this far across the hand (m) instead of
         # LATERAL; with several values the attempts cycle through them in order.
         if arg.startswith("lateral="):
@@ -2026,7 +2076,7 @@ def main():
         if node.arm_pub.get_subscription_count() > 0:
             break
 
-    global CONTACT_THRESHOLD_BY_FINGER
+    global CONTACT_THRESHOLD_BY_FINGER, CLOSE_STEP_SIM_S
     measured = calibrate_contact_threshold(node)
     if measured is not None:
         CONTACT_THRESHOLD_BY_FINGER = measured
@@ -2052,13 +2102,18 @@ def main():
         node.finger_yaw = 0.0 if zero else None
         if lateral_list is not None:
             lat = lateral_list[case_i % len(lateral_list)]
-        print(f"\n(re-centre before closing: {'ON' if rc else 'off'}; thumb preload: {tm}; "
+        if pace_list is not None:
+            CLOSE_STEP_SIM_S = pace_list[case_i % len(pace_list)]
+        pace_s = "msgs" if CLOSE_STEP_SIM_S is None else f"{CLOSE_STEP_SIM_S * 1000:.0f}ms"
+        print(f"\n(closing step pace: {pace_s}; "
+              f"re-centre before closing: {'ON' if rc else 'off'}; thumb preload: {tm}; "
               f"finger spread: {'commanded 0.0' if zero else 'uncommanded'}; "
               f"lateral aim: {lat * 1000:+.0f}mm)")
         r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin,
                     before_close=before_close, recentre=rc, thumb_mode=tm)
         REC["spread"] = "zero" if zero else "hold"
         REC["lateral"] = lat
+        REC["pace"] = pace_s
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -2139,7 +2194,7 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'lateral':>7}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  "
+    print(f"{'#':>2}  {'pace':>5}  {'lateral':>7}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  "
           f"{'recentre':>8}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
@@ -2147,7 +2202,7 @@ def main():
         opp_s = f"{opp:.0f}" if isinstance(opp, (int, float)) else "-"
         lat_v = rec.get("lateral")
         lat_s = f"{lat_v * 1000:+.0f}mm" if isinstance(lat_v, (int, float)) else "-"
-        print(f"{idx:>2}  {lat_s:>7}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  "
+        print(f"{idx:>2}  {rec.get('pace', '-'):>5}  {lat_s:>7}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  "
               f"{opp_s:>9}  {rec.get('recentre', '-'):>8}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "

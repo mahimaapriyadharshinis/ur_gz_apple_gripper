@@ -394,7 +394,12 @@ GRIP_MIN_FINGERS = 2
 GRIP_MIN_THUMB_NM = 1.5
 GRIP_SETTLE_SIM_S = 0.3     # simulated seconds for the fingers to follow each command
 GRIP_EXTRA_STEP = 0.02      # rad added per check to digits that are not pressing
-GRIP_EXTRA_MAX = 0.10       # most extra squeeze the check may add
+# Extra squeeze switched OFF (0.0): the check still measures and reports the grip, but no
+# longer adds squeeze. Tested on apple_10 it never produced a firm grip (0/4 fingers
+# pressing after 0.10 rad extra, twice) and the extra closing pushed the apple 28-30mm and
+# swung the thumb to 58-60 degrees from the fingers (95-105 without it). apple_02 did not
+# need it (4/4 fingers and 9.4Nm thumb straight after the normal squeeze).
+GRIP_EXTRA_MAX = 0.0        # most extra squeeze the check may add
 
 # During the lift, how often to sample, for how long, and how far the apple must fall
 # behind the hand before it counts as slipping.

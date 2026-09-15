@@ -380,6 +380,17 @@ THUMB_BACKOFF_STEP = 0.004
 THUMB_BACKOFF_MAX = 0.10
 CAP_THUMB = False
 
+# How the thumb preload decides it is pressing (attempt's thumb_mode). "spike": stop on
+# the first effort sample over the cap, a few messages after each step -- the tested
+# behaviour. apple_10's 4 picks on 14 Sep backed the thumb off 0.012-0.076 rad after it
+# (thumb 112-114deg around the apple from the fingers); all its 15 Sep failures backed off
+# 0-0.004 rad (58-109deg): how deep the thumb got depended on when a spike was sampled.
+# "steady": each step waits THUMB_STEP_SIM_S of simulated time and the thumb counts as
+# pressing only when the MEDIAN effort over that wait passes the cap, so the depth no
+# longer depends on sampling luck.
+THUMB_MODE = "spike"
+THUMB_STEP_SIM_S = 0.10
+
 # A finger counts as still gripping only above this. The idle floor measured 0.01-0.09Nm
 # across all three joints; genuinely loaded fingers read 0.87-1.50Nm. The contact
 # threshold (~0.07Nm) sits inside that idle band, so it overstated gripping.
@@ -934,7 +945,53 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     # 0.103Nm while the fingers then pressed at 1.5-5.9Nm, so the "backstop" simply gave
     # way. Close the thumb a further fixed amount, capped by force, so it is genuinely
     # bearing on the apple before the fingers arrive.
-    if contacted["R_Thumb"]:
+    if contacted["R_Thumb"] and THUMB_MODE == "steady":
+        def steady_thumb_effort():
+            """Median thumb effort over THUMB_STEP_SIM_S of simulated time."""
+            vals = []
+            t_start = current_sim_time(node)
+            wall_start = time.time()
+            while time.time() - wall_start < 60.0:
+                rclpy.spin_once(node, timeout_sec=0.05)
+                _, _, e = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
+                vals.append(abs(e or 0.0))
+                now = getattr(node, "joint_stamp", None)
+                if t_start is None or now is None or now - t_start >= THUMB_STEP_SIM_S:
+                    if len(vals) >= 3:
+                        break
+            return float(np.median(vals)) if vals else 0.0
+
+        contact_pos = current["R_Thumb"]
+        pushed = 0.0
+        raw = steady_thumb_effort()
+        while raw < THUMB_PRELOAD_FORCE and pushed < THUMB_PRELOAD_EXTRA:
+            pushed += THUMB_PRELOAD_STEP
+            current["R_Thumb"] = min(current["R_Thumb"] + THUMB_PRELOAD_STEP,
+                                     MAX_PITCH_CEILING)
+            node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
+                                 thumb_roll=THUMB_ROLL)
+            raw = steady_thumb_effort()
+        print(f"  thumb (steady mode) pushed {pushed:.3f} rad past first contact, "
+              f"steady push {raw:.2f}Nm")
+        if CAP_THUMB:
+            backed = 0.0
+            # Let the command catch up before judging the push it keeps up.
+            raw = steady_thumb_effort()
+            while raw > THUMB_PRELOAD_FORCE and backed < THUMB_BACKOFF_MAX:
+                backed += THUMB_BACKOFF_STEP
+                current["R_Thumb"] = max(current["R_Thumb"] - THUMB_BACKOFF_STEP, 0.0)
+                node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
+                                     thumb_roll=THUMB_ROLL)
+                raw = steady_thumb_effort()
+            print(f"  thumb backed off {backed:.3f} rad to hold its preload cap")
+        REC["thumb_depth"] = current["R_Thumb"] - contact_pos
+        peak["R_Thumb"] = max(peak["R_Thumb"], raw)
+        REC["thumb_push"] = raw
+        print(f"  thumb preloaded to {raw:.2f}Nm (steady), command "
+              f"{REC['thumb_depth']:+.3f} rad past first contact -- now closing the four "
+              f"fingers against it")
+    elif contacted["R_Thumb"]:
+        contact_pos = current["R_Thumb"]
         pushed = 0.0
         while pushed < THUMB_PRELOAD_EXTRA:
             _, _, eff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
@@ -978,10 +1035,11 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 _, _, teff = node.latest_joint_state.get("R_Thumb_Pitch", (0, 0, 0))
                 raw = abs(teff or 0.0)
             print(f"  thumb backed off {backed:.3f} rad to hold its preload cap")
+        REC["thumb_depth"] = current["R_Thumb"] - contact_pos
         peak["R_Thumb"] = max(peak["R_Thumb"], raw)
         REC["thumb_push"] = raw
-        print(f"  thumb preloaded to {raw:.2f}Nm -- now closing the four "
-              f"fingers against it")
+        print(f"  thumb preloaded to {raw:.2f}Nm, command {REC['thumb_depth']:+.3f} rad "
+              f"past first contact -- now closing the four fingers against it")
     else:
         print("  thumb found nothing -- the fingers will have no backstop")
     drive(fingers, MAX_PITCH_CEILING)
@@ -1135,7 +1193,7 @@ def apple_xyz(node):
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             cap_thumb=False, empty=False, relax=False, finish_grasp_move=False,
-            before_close=None, recentre=False):
+            before_close=None, recentre=False, thumb_mode="spike"):
     """One full grasp attempt: reset, approach, close, lift, measure.
 
     before_close, if given, is called as before_close(node) once the hand is in position
@@ -1156,6 +1214,9 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     REC["cap"] = "on" if cap_thumb else "off"
     REC["empty"] = empty
     REC["recentre"] = "on" if recentre else "off"
+    global THUMB_MODE
+    THUMB_MODE = thumb_mode
+    REC["thumb"] = thumb_mode
     REC["relax"] = "on" if relax else "off"
     REC["finish"] = "yes" if finish_grasp_move else "no"
     label = (f"{'EMPTY-HAND CONTROL' if empty else 'GRASP'}   "
@@ -1874,7 +1935,16 @@ def main():
     cases = CASES
     squeeze_override = None
     recentre_mode = "off"
+    thumb_arg = "spike"
     for arg in sys.argv[2:]:
+        # thumb=spike|steady|ab: how the thumb preload decides it is pressing (see
+        # THUMB_MODE); "ab" alternates steady/spike attempt by attempt.
+        if arg.startswith("thumb="):
+            thumb_arg = arg.split("=", 1)[1]
+            if thumb_arg not in ("spike", "steady", "ab"):
+                print(f"thumb= must be spike, steady or ab, got {arg!r}")
+                return
+            continue
         # recentre=on|off|ab: re-centre the hand on the apple before closing; "ab"
         # alternates on/off attempt by attempt so both are compared in one run.
         if arg.startswith("recentre="):
@@ -1935,9 +2005,10 @@ def main():
     records = []
     for case_i, (pt, ps, lat, po, dr, cap, emp, rel, fin) in enumerate(cases):
         rc = recentre_mode == "on" or (recentre_mode == "ab" and case_i % 2 == 0)
-        print(f"\n(re-centre before closing: {'ON' if rc else 'off'})")
+        tm = thumb_arg if thumb_arg != "ab" else ("steady" if case_i % 2 == 0 else "spike")
+        print(f"\n(re-centre before closing: {'ON' if rc else 'off'}; thumb preload: {tm})")
         r = attempt(node, target_name, pt, ps, lat, po, dr, cap, emp, rel, fin,
-                    before_close=before_close, recentre=rc)
+                    before_close=before_close, recentre=rc, thumb_mode=tm)
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -2018,10 +2089,13 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'recentre':>10}  {'apple still':>11}  {'1st move off':>12}  "
+    print(f"{'#':>2}  {'thumb':>6}  {'thumb deg':>9}  {'recentre':>8}  {'apple still':>11}  "
+          f"{'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
-        print(f"{idx:>2}  {rec.get('recentre', '-'):>10}  "
+        opp = rec.get("opposition")
+        opp_s = f"{opp:.0f}" if isinstance(opp, (int, float)) else "-"
+        print(f"{idx:>2}  {rec.get('thumb', '-'):>6}  {opp_s:>9}  {rec.get('recentre', '-'):>8}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
               f"{mm(rec.get('apple_moved')):>11}  {result:<10}")

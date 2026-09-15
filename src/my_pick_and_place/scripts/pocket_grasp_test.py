@@ -184,6 +184,9 @@ LIFT_HEIGHT = 0.15
 # How far back along the hand's forward axis to start, so the fingers move in
 # beside the apple rather than being lowered through it.
 APPROACH_BACKOFF = 0.16
+# Simulated seconds the approach move runs before the grasp move replaces it (see where
+# it is used). 0.6s sits inside the range, about 0.4-1.0s, under which apple_10 picked.
+APPROACH_SIM_S = 0.6
 
 # Where the wrist correction runs: this far back from the grasp pose along the hand's
 # forward axis. It was 40mm, on the assumption that was "clear of the apple". It was not.
@@ -1231,8 +1234,20 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
                 "lateral": lateral, "ok": False, "not_positioned": True,
                 "reason": reason}
 
+    approach_cmd_sim = current_sim_time(node)
     node.send_arm_trajectory(approach[0], 3.5)
-    settle(node, 12.0)
+    if approach_cmd_sim is not None:
+        # A fixed slice of SIMULATED time, not a 12s wall-clock wait. The grasp move is
+        # sent before the approach move completes, so how far the arm has got toward the
+        # back-off pose decides the path the hand takes into the apple -- and a wall-clock
+        # wait made that depend on how fast Gazebo happened to run. At about 0.4-1.0s of
+        # simulated time (0.03-0.09x real time) apple_10 was disturbed 15-17mm and picked
+        # 5 of 5; at about 1.3s (0.10-0.11x) it was disturbed 19-21mm and picked 0 of 2;
+        # waiting out the whole 3.5s move disturbed apple_06 72mm and picked 0 of 4.
+        waited = wait_until_sim(node, approach_cmd_sim, APPROACH_SIM_S)
+        print(f"  approach move given {waited:.2f}s of simulated time before the grasp move")
+    else:
+        settle(node, 12.0)
     check_knock("the move to the approach pose")
 
     if method == "pick":

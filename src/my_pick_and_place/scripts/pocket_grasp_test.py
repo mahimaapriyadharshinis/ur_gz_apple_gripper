@@ -1997,9 +1997,10 @@ def main():
     for arg in sys.argv[2:]:
         # variants=drop:0.016/preshape:0.3/drop:0.016+tilt:55 -- one grasp change per
         # attempt, cycling in order. Keys: drop (m lower), preshape (rad), lateral (m),
-        # offset (palm back-off, m), tilt (deg). Anything not named keeps its tested value.
+        # offset (palm back-off, m), tilt (deg), relax (1: ease the thumb to THUMB_LIFT_NM
+        # before lifting). Anything not named keeps its tested value.
         if arg.startswith("variants="):
-            keys = {"drop", "preshape", "lateral", "offset", "tilt"}
+            keys = {"drop", "preshape", "lateral", "offset", "tilt", "relax"}
             variants = []
             try:
                 for chunk in arg.split("=", 1)[1].split("/"):
@@ -2135,10 +2136,11 @@ def main():
             if "tilt" in var:
                 pt = np.radians(var["tilt"])
             PALM_OFFSET = var.get("offset", TESTED_PALM_OFFSET)
+            rel = bool(var.get("relax", rel))
             variant_s = "+".join(f"{k}:{v:g}" for k, v in var.items())
         print(f"\n(grasp variant: {variant_s} -> tilt {np.degrees(pt):.0f}deg, "
               f"lowered {dr * 1000:.0f}mm, pre-shape {ps:.2f}, lateral {lat * 1000:+.0f}mm, "
-              f"back-off {PALM_OFFSET:.3f}m)")
+              f"back-off {PALM_OFFSET:.3f}m, thumb eased before lift: {'yes' if rel else 'no'})")
         if pace_list is not None:
             CLOSE_STEP_SIM_S = pace_list[case_i % len(pace_list)]
         pace_s = "msgs" if CLOSE_STEP_SIM_S is None else f"{CLOSE_STEP_SIM_S * 1000:.0f}ms"

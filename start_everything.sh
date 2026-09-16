@@ -7,9 +7,17 @@ set -e
 # timeouts were raised specifically so GUI mode (which runs well below real-time on
 # this VM) still produces correct, trustworthy results instead of stale ones.
 GUI_FLAG=false
-if [ "$1" = "gui" ]; then
-    GUI_FLAG=true
-fi
+TACTILE=false
+for arg in "$@"; do
+    case "$arg" in
+        gui) GUI_FLAG=true ;;
+        # "tactile" builds the robot with a force_torque sensor in each fingertip and
+        # bridges the five sensor topics. Off by default: without it the robot, the
+        # world and every topic are exactly what picked all ten apples, so the tested
+        # result cannot be affected by sensors that are not there.
+        tactile) TACTILE=true ;;
+    esac
+done
 
 source /opt/ros/humble/setup.bash
 source ~/ur_gz_ws/install/setup.bash
@@ -38,6 +46,14 @@ sleep 2
 echo "=== Regenerating /tmp/real_robot_exact.urdf (cleared on WSL2 reboot) ==="
 xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro > /tmp/real_robot_exact.urdf
 
+DESCRIPTION=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro
+if [ "$TACTILE" = true ]; then
+    echo "=== Building the robot WITH fingertip force sensors (tactile mode) ==="
+    xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro \
+        tactile:=true > /tmp/real_robot_tactile.urdf
+    DESCRIPTION=/tmp/real_robot_tactile.urdf
+fi
+
 # gazebo_gui:=false runs `ign gazebo -s` (server only, no GUI process) -- the default,
 # since the GUI's 3D view runs well below real-time on this VM (confirmed directly:
 # joints still moving fast after generous timeouts). Pass "gui" as this script's first
@@ -51,7 +67,7 @@ else
 fi
 setsid ros2 launch ur_simulation_gz ur_sim_control.launch.py \
     ur_type:=ur5e \
-    description_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro \
+    description_file:=$DESCRIPTION \
     controllers_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/merged_controllers.yaml \
     world_file:=/home/mahimaa/ur_gz_ws/src/apple_gripper_sim/worlds/apple_world.world \
     gazebo_gui:=$GUI_FLAG \
@@ -79,6 +95,19 @@ ros2 run ros_gz_bridge parameter_bridge \
     /overhead_camera@sensor_msgs/msg/Image[ignition.msgs.Image \
     > /tmp/overhead_camera_bridge.log 2>&1 &
 disown
+
+if [ "$TACTILE" = true ]; then
+    echo "=== Starting fingertip force sensor bridges (background) ==="
+    for pair in "R_Index_DIP index_tip_ft" "R_Middle_DIP middle_tip_ft" \
+                "R_Ring_DIP ring_tip_ft" "R_Pinky_DIP pinky_tip_ft" \
+                "R_Thumb_DIP thumb_tip_ft"; do
+        set -- $pair
+        ros2 run ros_gz_bridge parameter_bridge \
+            "/world/apple_world/model/ur/joint/$1/sensor/$2/forcetorque@geometry_msgs/msg/Wrench[ignition.msgs.Wrench" \
+            >> /tmp/tactile_bridges.log 2>&1 &
+        disown
+    done
+fi
 
 echo "=== Starting apple pose bridges (background) ==="
 for i in 01 02 03 04 05 06 07 08 09 10; do

@@ -16,6 +16,35 @@
   <xacro:arg name="generate_ros2_control_tag" default="true"/>
   <xacro:arg name="sim_ignition" default="true"/>
 
+  <!-- Fingertip force sensing, OFF by default so every existing launch produces exactly
+       the robot that picked all ten apples. With tactile:=true, each fingertip joint gets
+       a force_torque sensor: a load cell in the tip, reading contact force in newtons.
+       Needed because joint effort (what the grasp reads today) is a torque that saturates
+       at 1.5Nm, so a firm grip and a crushing grip read the same. -->
+  <xacro:arg name="tactile" default="false"/>
+  <xacro:property name="tactile_rate" value="100"/>
+  <xacro:if value="$(arg tactile)">
+    <xacro:macro name="fingertip_ft" params="joint sensor">
+      <gazebo reference="${joint}">
+        <sensor name="${sensor}" type="force_torque">
+          <always_on>1</always_on>
+          <update_rate>${tactile_rate}</update_rate>
+          <visualize>false</visualize>
+          <force_torque>
+            <!-- Report in the child (fingertip) frame: that is where contact happens. -->
+            <frame>child</frame>
+            <measure_direction>parent_to_child</measure_direction>
+          </force_torque>
+        </sensor>
+      </gazebo>
+    </xacro:macro>
+    <xacro:fingertip_ft joint="R_Index_DIP"  sensor="index_tip_ft"/>
+    <xacro:fingertip_ft joint="R_Middle_DIP" sensor="middle_tip_ft"/>
+    <xacro:fingertip_ft joint="R_Ring_DIP"   sensor="ring_tip_ft"/>
+    <xacro:fingertip_ft joint="R_Pinky_DIP"  sensor="pinky_tip_ft"/>
+    <xacro:fingertip_ft joint="R_Thumb_DIP"  sensor="thumb_tip_ft"/>
+  </xacro:if>
+
   <link name="base_footprint"/>
 
   <!-- Mobile Base -->

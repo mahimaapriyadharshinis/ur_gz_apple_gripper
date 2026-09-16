@@ -41,6 +41,14 @@
     <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands">
     </plugin>
 
+    <!-- Runs force_torque and contact sensors when the robot declares any (tactile:=true
+         in ur5e_dexhand.xacro). Inert when none are declared, so this changes nothing for
+         the runs that picked all ten apples. -->
+    <plugin filename="ignition-gazebo-forcetorque-system" name="ignition::gazebo::systems::ForceTorque">
+    </plugin>
+    <plugin filename="ignition-gazebo-contact-system" name="ignition::gazebo::systems::Contact">
+    </plugin>
+
     <include>
 	<uri>https://fuel.gazebosim.org/1.0/openrobotics/models/Sun</uri>
     </include>

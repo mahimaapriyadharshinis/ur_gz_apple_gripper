@@ -47,10 +47,21 @@ echo "=== Regenerating /tmp/real_robot_exact.urdf (cleared on WSL2 reboot) ==="
 xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro > /tmp/real_robot_exact.urdf
 
 DESCRIPTION=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro
+CONTROLLERS=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/merged_controllers.yaml
 if [ "$TACTILE" = true ]; then
     echo "=== Building the robot WITH fingertip force sensors (tactile mode) ==="
-    xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro \
-        tactile:=true > /tmp/real_robot_tactile.urdf
+    # simulation_controllers MUST be passed here. The launch file normally supplies
+    # it while expanding the xacro itself; pre-expanding without it left
+    # <parameters></parameters> empty, so ign_ros2_control started no
+    # controller_manager and the hand controller spawner waited forever.
+    xacro "$DESCRIPTION" tactile:=true \
+        simulation_controllers:="$CONTROLLERS" > /tmp/real_robot_tactile.urdf
+    if ! grep -q "<parameters>$CONTROLLERS</parameters>" /tmp/real_robot_tactile.urdf; then
+        echo "ABORT: /tmp/real_robot_tactile.urdf has no controller parameters -- the"
+        echo "       hand controller would never start. Not launching."
+        exit 1
+    fi
+    echo "    sensors in the built robot: $(grep -c force_torque /tmp/real_robot_tactile.urdf)"
     DESCRIPTION=/tmp/real_robot_tactile.urdf
 fi
 

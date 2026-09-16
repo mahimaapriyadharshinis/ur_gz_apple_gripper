@@ -188,6 +188,22 @@ REST_POSE = [0.0, -1.2, 1.5, -1.9, 0.0, 0.0]
 # apple; only lifting proves the grip actually holds it.
 LIFT_HEIGHT = 0.15
 
+# How long the lift is commanded to take. 3.0s is what every result so far used.
+# apple_10 fails in the first 2-5cm of the lift with all five fingers still gripping
+# after the squeeze (1 of 4 and 2 of 5 on 16-17 Sep), so the start of the lift -- when
+# the apple's weight transfers from the table to the fingers -- is the suspect.
+LIFT_SECONDS = 3.0
+
+# Re-grip during the lift. The fingers hold a POSITION, not a force: once the apple
+# settles a millimetre the contact is lost and nothing re-tightens, which is what the
+# traces show (1.50Nm on four fingers, then 0.00Nm a quarter of a second later). With
+# REGRIP on, a finger whose load has dropped is commanded slightly further closed,
+# while the apple is still with the hand.
+REGRIP = False
+REGRIP_STEP = 0.010
+REGRIP_MAX = 0.060
+REGRIP_MIN_GAP_S = 0.05      # simulated seconds between re-grips
+
 # How far back along the hand's forward axis to start, so the fingers move in
 # beside the apple rather than being lowered through it.
 APPROACH_BACKOFF = 0.16
@@ -1851,9 +1867,11 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         REC["thumb_at_lift"] = loads0["R_Thumb"]
         print("  at lift start, load (strongest joint): "
               + ", ".join(f"{g.replace('R_', '')}={loads0[g]:.2f}" for g in FINGER_GROUPS))
-        node.send_arm_trajectory(lift[0], 3.0)
+        node.send_arm_trajectory(lift[0], LIFT_SECONDS)
         trace = []
         slip_at = None
+        # Lists, so the watch loop can update them without needing `nonlocal`.
+        regrip_done, regrip_last, regrip_count = [0.0], [None], [0]
         arm_peak = {jn: 0.0 for jn in ARM_JOINTS}
         t_start = time.time()
         sim_start = getattr(node, "joint_stamp", None)
@@ -1887,6 +1905,25 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
                           n_loaded, loads["R_Thumb"], lift_eff, w1_eff, sim_t))
             if slip_at is None and lagging > SLIP_MM:
                 slip_at = (hand_rise, n_loaded, loads["R_Thumb"], now_t - t_start)
+            # Re-tighten a finger that has lost its load, while the apple is still in the
+            # hand. Position-held fingers cannot recover contact on their own.
+            if (REGRIP and LAST_FINGER_CMD and lagging < SLIP_MM
+                    and regrip_done[0] < REGRIP_MAX
+                    and (sim_t is None or regrip_last[0] is None
+                         or sim_t - regrip_last[0] >= REGRIP_MIN_GAP_S)):
+                slack = [g for g in FINGER_GROUPS
+                         if contacted.get(g) and loads[g] < (GRIP_MIN_THUMB_NM
+                                                             if g == "R_Thumb"
+                                                             else GRIP_HOLD_NM)]
+                if slack:
+                    for g in slack:
+                        LAST_FINGER_CMD[g] = min(LAST_FINGER_CMD[g] + REGRIP_STEP,
+                                                 MAX_PITCH_CEILING)
+                    node.command_fingers(LAST_FINGER_CMD, STEP_COMMAND_TIME,
+                                         thumb_yaw=THUMB_GRASP_YAW, thumb_roll=THUMB_ROLL)
+                    regrip_done[0] += REGRIP_STEP
+                    regrip_last[0] = sim_t
+                    regrip_count[0] += 1
             if use_sim and sim_t is not None:
                 if last_sim_seen is None or sim_t > last_sim_seen + 1e-6:
                     last_sim_seen, last_clock_move = sim_t, now_t
@@ -1931,7 +1968,12 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             sim_txt = ("" if final[8] is None else
                        f" ({final[8]:.1f}s of simulated time; the simulation ran at "
                        f"{final[8] / max(final[0], 1e-6):.3f}x real time)")
-            print(f"  hand rose {final[1]:.0f}mm of the commanded {LIFT_HEIGHT * 1000:.0f}mm "
+            REC["regrip_count"] = regrip_count[0]
+        REC["regrip_rad"] = regrip_done[0]
+        if REGRIP:
+            print(f"  re-gripped {regrip_count[0]} times during the lift "
+                  f"({regrip_done[0]:.3f} rad of extra closing in total)")
+        print(f"  hand rose {final[1]:.0f}mm of the commanded {LIFT_HEIGHT * 1000:.0f}mm "
                   f"in {final[0]:.1f}s{sim_txt}, commanded to take 3.0s; wrist_1 at its limit "
                   f"in {REC['wrist1_pinned'] * 100:.0f}% of samples")
         saturated = [jn for jn in ARM_JOINTS
@@ -2002,8 +2044,29 @@ def main():
     spread_arg = "hold"
     lateral_list = None
     pace_list = None
+    lift_list = None
+    regrip_mode = "off"
     variants = None
     for arg in sys.argv[2:]:
+        # lift=6 or lift=3,6: how long the lift is commanded to take (s); with several
+        # values the attempts cycle through them.
+        if arg.startswith("lift="):
+            try:
+                lift_list = [float(v) for v in arg.split("=", 1)[1].split(",") if v]
+            except ValueError:
+                print(f"lift= needs seconds, e.g. lift=3,6, got {arg!r}")
+                return
+            if not lift_list:
+                print(f"lift= needs at least one value, got {arg!r}")
+                return
+            continue
+        # regrip=on|off|ab: re-tighten a finger that loses its load during the lift.
+        if arg.startswith("regrip="):
+            regrip_mode = arg.split("=", 1)[1]
+            if regrip_mode not in ("on", "off", "ab"):
+                print(f"regrip= must be on, off or ab, got {arg!r}")
+                return
+            continue
         # variants=drop:0.016/preshape:0.3/drop:0.016+tilt:55 -- one grasp change per
         # attempt, cycling in order. Keys: drop (m lower), preshape (rad), lateral (m),
         # offset (palm back-off, m), tilt (deg), relax (1: ease the thumb to THUMB_LIFT_NM
@@ -2110,6 +2173,7 @@ def main():
             break
 
     global CONTACT_THRESHOLD_BY_FINGER, CLOSE_STEP_SIM_S, PALM_OFFSET
+    global LIFT_SECONDS, REGRIP
     measured = calibrate_contact_threshold(node)
     if measured is not None:
         CONTACT_THRESHOLD_BY_FINGER = measured
@@ -2150,6 +2214,11 @@ def main():
         print(f"\n(grasp variant: {variant_s} -> tilt {np.degrees(pt):.0f}deg, "
               f"lowered {dr * 1000:.0f}mm, pre-shape {ps:.2f}, lateral {lat * 1000:+.0f}mm, "
               f"back-off {PALM_OFFSET:.3f}m, thumb eased before lift: {'yes' if rel else 'no'})")
+        if lift_list is not None:
+            LIFT_SECONDS = lift_list[case_i % len(lift_list)]
+        REGRIP = regrip_mode == "on" or (regrip_mode == "ab" and case_i % 2 == 0)
+        print(f"\n(lift commanded over {LIFT_SECONDS:.1f}s; re-grip during the lift: "
+              f"{'ON' if REGRIP else 'off'})")
         if pace_list is not None:
             CLOSE_STEP_SIM_S = pace_list[case_i % len(pace_list)]
         pace_s = "msgs" if CLOSE_STEP_SIM_S is None else f"{CLOSE_STEP_SIM_S * 1000:.0f}ms"
@@ -2163,6 +2232,8 @@ def main():
         REC["lateral"] = lat
         REC["variant"] = variant_s
         REC["pace"] = pace_s
+        REC["lift_s"] = LIFT_SECONDS
+        REC["regrip"] = "on" if REGRIP else "off"
         results.append(r)
         records.append(dict(REC))
         if r.get("dead_sim"):
@@ -2243,7 +2314,8 @@ def main():
     bar = "=" * 96
     print(f"\n{bar}\nRESULTS\n{bar}")
     print("\n1) GETTING THE HAND TO THE APPLE")
-    print(f"{'#':>2}  {'variant':<24}  {'pace':>5}  {'lateral':>7}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  "
+    print(f"{'#':>2}  {'lift':>5}  {'regrip':>6}  {'variant':<24}  {'pace':>5}  "
+          f"{'lateral':>7}  {'spread':>6}  {'thumb':>6}  {'thumb deg':>9}  "
           f"{'recentre':>8}  {'apple still':>11}  {'1st move off':>12}  "
           f"{'after fixing':>12}  {'approach':>9}  {'apple moved':>11}  {'RESULT':<10}")
     for idx, rec, result, why in rows:
@@ -2251,7 +2323,10 @@ def main():
         opp_s = f"{opp:.0f}" if isinstance(opp, (int, float)) else "-"
         lat_v = rec.get("lateral")
         lat_s = f"{lat_v * 1000:+.0f}mm" if isinstance(lat_v, (int, float)) else "-"
-        print(f"{idx:>2}  {rec.get('variant', '-'):<24}  {rec.get('pace', '-'):>5}  {lat_s:>7}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  "
+        lift_s = rec.get("lift_s")
+        print(f"{idx:>2}  {('-' if lift_s is None else f'{lift_s:.1f}s'):>5}  "
+              f"{rec.get('regrip', '-'):>6}  "
+              f"{rec.get('variant', '-'):<24}  {rec.get('pace', '-'):>5}  {lat_s:>7}  {rec.get('spread', '-'):>6}  {rec.get('thumb', '-'):>6}  "
               f"{opp_s:>9}  {rec.get('recentre', '-'):>8}  "
               f"{rec.get('settled', '-'):>11}  {mm(rec.get('first_err')):>12}  "
               f"{mm(rec.get('pre_err')):>12}  {rec.get('steps', '-'):>9}  "
@@ -2290,7 +2365,7 @@ def main():
     print("  thumb cap        -- on: the thumb is backed off until it pushes no more than "
           f"{THUMB_PRELOAD_FORCE:.1f}Nm")
     print(f"  hand rose / took -- how far the hand actually rose, and how long it took "
-          f"(commanded: {LIFT_HEIGHT * 100:.0f}cm in 3.0s)")
+          f"(commanded: {LIFT_HEIGHT * 100:.0f}cm in {LIFT_SECONDS:.1f}s)")
     print("  sim time         -- how long the lift took in simulated time (wall time is longer "
           "when Gazebo runs slower than real time)")
     print("  shoulder/wrist_1 -- peak effort on those arm joints during the lift "

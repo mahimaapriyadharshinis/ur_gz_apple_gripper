@@ -22,7 +22,10 @@
        Needed because joint effort (what the grasp reads today) is a torque that saturates
        at 1.5Nm, so a firm grip and a crushing grip read the same. -->
   <xacro:arg name="tactile" default="false"/>
-  <xacro:property name="tactile_rate" value="100"/>
+  <!-- 50Hz, not 100: at 100 the simulation dropped from about 0.11x to 0.070x real
+       time, and this project has already been bitten twice by timing changing the
+       grasp. 50Hz is still 20 samples per closing step. -->
+  <xacro:property name="tactile_rate" value="50"/>
   <xacro:if value="$(arg tactile)">
     <xacro:macro name="fingertip_ft" params="joint sensor">
       <gazebo reference="${joint}">

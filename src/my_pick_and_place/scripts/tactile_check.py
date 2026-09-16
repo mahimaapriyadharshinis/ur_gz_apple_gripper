@@ -51,6 +51,10 @@ class TactileCheck(Node):
         # the thumb when first measured). The first settled reading is kept as that
         # baseline, so the printed value is the force that comes from contact.
         self.baseline = {}
+        # Highest force above baseline seen per finger, so a short contact during a grasp
+        # is still visible afterwards instead of scrolling past.
+        self.peak = {}
+        self.effort_peak = {}
         for finger, (joint, sensor) in FINGERTIP_SENSORS.items():
             self.create_subscription(
                 Wrench, topic_for(joint, sensor),
@@ -59,16 +63,27 @@ class TactileCheck(Node):
 
     def _wrench_cb(self, finger, msg):
         f = msg.force
+        mag = (f.x * f.x + f.y * f.y + f.z * f.z) ** 0.5
         self.force[finger] = (f.x, f.y, f.z)
+        # Baseline per finger, on its FIRST reading. Taking one baseline for the whole hand
+        # missed every finger whose first message had not arrived yet, so four of the five
+        # kept showing their idle weight instead of zero.
+        self.baseline.setdefault(finger, mag)
+        self.peak[finger] = max(self.peak.get(finger, 0.0), mag - self.baseline[finger])
 
     def _joint_cb(self, msg):
         for name, eff in zip(msg.name, msg.effort):
             if name.endswith("_Pitch") or name.endswith("_DIP"):
                 self.effort[name] = eff
+                self.effort_peak[name] = max(self.effort_peak.get(name, 0.0), abs(eff))
 
-    def take_baseline(self):
-        for finger, vec in self.force.items():
-            self.baseline[finger] = sum(v * v for v in vec) ** 0.5
+    def peak_line(self):
+        """Highest force and highest effort seen so far, per finger."""
+        parts = []
+        for finger, (joint, _) in FINGERTIP_SENSORS.items():
+            parts.append(f"{finger}: {self.peak.get(finger, 0.0):5.2f}N"
+                         f"/{self.effort_peak.get(joint, 0.0):4.2f}Nm")
+        return "PEAK SO FAR   " + "   ".join(parts)
 
     def line(self):
         parts = []
@@ -103,24 +118,29 @@ def main():
         rclpy.shutdown()
         return 1
 
-    # Settle first, then treat what it reads with nothing in the hand as zero.
-    for _ in range(20):
+    # Let every sensor send at least one reading; each finger's first reading becomes
+    # its own zero (the weight of the tip itself).
+    for _ in range(40):
         rclpy.spin_once(node, timeout_sec=0.1)
-    node.take_baseline()
     print("idle baseline subtracted: "
           + ", ".join(f"{f}={v:.2f}N" for f, v in sorted(node.baseline.items())))
     print("force above baseline (N) / joint effort at the same joint (Nm)")
     print("   both should rise together when a finger touches the apple, and the force "
           "should keep rising after effort saturates at 1.50Nm.\n")
+    ticks = 0
     try:
         while rclpy.ok():
             for _ in range(10):
                 rclpy.spin_once(node, timeout_sec=0.1)
             print(node.line(), flush=True)
+            ticks += 1
+            if ticks % 10 == 0:
+                print(node.peak_line(), flush=True)
             if once:
                 break
     except KeyboardInterrupt:
         print()
+    print(node.peak_line())
     node.destroy_node()
     try:
         rclpy.shutdown()

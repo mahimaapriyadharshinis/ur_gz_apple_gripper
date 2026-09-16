@@ -46,6 +46,11 @@ class TactileCheck(Node):
         super().__init__("tactile_check")
         self.force = {}
         self.effort = {}
+        # Each fingertip reads a small constant force with the hand idle and touching
+        # nothing -- the weight of the tip link itself (0.19N on the fingers, 0.29N on
+        # the thumb when first measured). The first settled reading is kept as that
+        # baseline, so the printed value is the force that comes from contact.
+        self.baseline = {}
         for finger, (joint, sensor) in FINGERTIP_SENSORS.items():
             self.create_subscription(
                 Wrench, topic_for(joint, sensor),
@@ -61,18 +66,22 @@ class TactileCheck(Node):
             if name.endswith("_Pitch") or name.endswith("_DIP"):
                 self.effort[name] = eff
 
+    def take_baseline(self):
+        for finger, vec in self.force.items():
+            self.baseline[finger] = sum(v * v for v in vec) ** 0.5
+
     def line(self):
         parts = []
         for finger, (joint, _) in FINGERTIP_SENSORS.items():
             vec = self.force.get(finger)
             if vec is None:
-                parts.append(f"{finger}: sensor -")
+                parts.append(f"{finger}: -")
             else:
                 mag = sum(v * v for v in vec) ** 0.5
-                parts.append(f"{finger}: {mag:5.2f}N")
+                parts.append(f"{finger}: {mag - self.baseline.get(finger, 0.0):+5.2f}N")
             eff = self.effort.get(joint)
-            parts[-1] += f" / {'-' if eff is None else f'{abs(eff):4.2f}Nm'}"
-        return "  ".join(parts)
+            parts[-1] += f"/{'-' if eff is None else f'{abs(eff):4.2f}Nm'}"
+        return "   ".join(parts)
 
 
 def main():
@@ -94,9 +103,15 @@ def main():
         rclpy.shutdown()
         return 1
 
-    print("force per fingertip (N) / joint effort at the same joint (Nm)")
-    print("   sensor and effort should rise and fall together when a finger touches "
-          "something.\n")
+    # Settle first, then treat what it reads with nothing in the hand as zero.
+    for _ in range(20):
+        rclpy.spin_once(node, timeout_sec=0.1)
+    node.take_baseline()
+    print("idle baseline subtracted: "
+          + ", ".join(f"{f}={v:.2f}N" for f, v in sorted(node.baseline.items())))
+    print("force above baseline (N) / joint effort at the same joint (Nm)")
+    print("   both should rise together when a finger touches the apple, and the force "
+          "should keep rising after effort saturates at 1.50Nm.\n")
     try:
         while rclpy.ok():
             for _ in range(10):
@@ -105,9 +120,13 @@ def main():
             if once:
                 break
     except KeyboardInterrupt:
-        pass
+        print()
     node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.shutdown()
+    except Exception:
+        # Ctrl+C can shut the context down first; not worth a traceback.
+        pass
     return 0
 
 

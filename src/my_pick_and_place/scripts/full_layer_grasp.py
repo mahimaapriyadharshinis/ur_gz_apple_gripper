@@ -20,6 +20,7 @@ from sensor_msgs.msg import JointState, Image
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from cv_bridge import CvBridge
 import ikpy.chain
+import vlm_predict_verify as pv
 import sys
 import tf2_ros
 
@@ -60,8 +61,19 @@ MAX_PITCH_CEILING = 1.25
 # Measured so far: 0.05 rad did not hold the apple (3 of 5 fingers, no lift) and 0.12
 # rad picked all ten apples. The ends of this range must each pick a light and a heavy
 # apple before VISION_SETS_GRIP is switched on (pocket_grasp_test.py squeeze=...).
+# How long to wait for the apple's pose (wall clock). The bridge publishes in simulated
+# time, so at 0.03x real time a 10s wait was too short.
+POSE_WAIT_S = 60.0
+
 GRIP_SQUEEZE_RANGE = (0.08, 0.16)
 VISION_SETS_GRIP = False
+
+# Ask the vision model to predict before the grasp and verify after the lift, and score
+# both against what the run measured (vlm_predict_verify.py). Observation only: the
+# answers are logged, never used to command anything, so a wrong, slow or missing answer
+# cannot change a pick. Switched on per run with the "predict" argument.
+VLM_PREDICT_VERIFY = False
+PREDICT_VERIFY_RECORDS = []
 
 
 def squeeze_for_fragility(fragility):
@@ -738,6 +750,11 @@ class FullLayerGraspNode(Node):
         return near
 
     def set_target(self, target_name):
+        # Same apple again (the next attempt): keep the subscription and the last pose.
+        # Re-subscribing threw the pose away, and with Gazebo at 0.03x real time no new one
+        # arrived within the 10s wait (apple_03 attempt 2 and apple_04 attempt 1, 15 Sep).
+        if self.pose_sub is not None and target_name == self.target_name:
+            return
         if self.pose_sub is not None:
             self.destroy_subscription(self.pose_sub)
         self.target_name = target_name
@@ -1438,10 +1455,21 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         # the apple reset reports "would not settle" six times without a single reading
         # (the first pipeline run skipped both attempts exactly that way).
         self.set_target(target_name)
-        if not self.wait_for(lambda: self.target_pose is not None, timeout=10.0):
+        clock_before = getattr(self, "joint_stamp", None)
+        if not self.wait_for(lambda: self.target_pose is not None, timeout=POSE_WAIT_S):
+            clock_after = getattr(self, "joint_stamp", None)
+            if clock_before is None or clock_after is None or clock_after <= clock_before:
+                # The simulation clock did not move either: Gazebo has stopped, not the bridge.
+                print(f"  SIM FROZE: no pose for {target_name} and the simulation clock did "
+                      f"not advance in {POSE_WAIT_S:.0f}s -- restart Gazebo; this attempt "
+                      f"measured nothing.")
+                return {"target": target_name, "success": False, "outcome": "sim_frozen",
+                        "lifted_ok": False, "placed_ok": False, "apple_rose": None,
+                        "crate_distance": None, "vlm": None}
             self.get_logger().error(
-                f"No pose received on /model/{target_name}/pose within 10s -- is the pose "
-                f"bridge running (start_everything.sh)?")
+                f"No pose received on /model/{target_name}/pose within {POSE_WAIT_S:.0f}s while "
+                f"the simulation ran {clock_after - clock_before:.2f}s -- is the pose bridge "
+                f"running (start_everything.sh)?")
             return {"target": target_name, "success": False, "outcome": "no_apple_pose",
                     "lifted_ok": False, "placed_ok": False, "apple_rose": None,
                     "crate_distance": None, "vlm": None}
@@ -1455,6 +1483,9 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         def before_close(node):
             vlm_result = self.layer1_vlm_analysis()
+            if VLM_PREDICT_VERIFY:
+                seen["pv_pred"] = pv.predict_before(self.latest_frame, OLLAMA_URL, MODEL_NAME)
+                self.get_logger().info(f"[Predict] {seen['pv_pred']}")
             plan = self.layer2_imagination(vlm_result)
             seen["vlm"], seen["plan"] = vlm_result, plan
             squeeze = squeeze_for_fragility(vlm_result.get("fragility_score", 5))
@@ -1528,6 +1559,21 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             "crate_distance": crate_dist,
             "success": success,
         })
+        if VLM_PREDICT_VERIFY and "pv_pred" in seen:
+            # Fresh frame first: the hand has moved since the prediction was made.
+            for _ in range(10):
+                rclpy.spin_once(self, timeout_sec=0.1)
+            ver = pv.verify_after(self.latest_frame, OLLAMA_URL, MODEL_NAME)
+            self.get_logger().info(f"[Verify] {ver}")
+            truth = pv.apple_truth(target_name, APPLE_RADIUS.get(target_name))
+            scored = pv.score(seen["pv_pred"], ver, truth,
+                              {"held": bool(lifted_ok), "gap_spread_m": rec.get("gap_spread")})
+            print(pv.one_line(target_name, seen["pv_pred"], ver, scored))
+            record = {"apple": target_name, "outcome": outcome, "truth": truth,
+                      "predict": seen["pv_pred"], "verify": ver, "score": scored}
+            pv.log_record(record)
+            PREDICT_VERIFY_RECORDS.append(record)
+
         self.get_logger().info(
             f"=== RESULT for {target_name}: {'SUCCESS' if success else 'FAILED'} "
             f"(outcome={outcome}, apple rose "
@@ -1876,14 +1922,17 @@ def main():
     # Picks and holds by default; add "place" to also carry the apple to the crate.
     args = sys.argv[1:]
     place = "place" in args
-    args = [a for a in args if a != "place"]
+    global VLM_PREDICT_VERIFY
+    VLM_PREDICT_VERIFY = "predict" in args
+    args = [a for a in args if a not in ("place", "predict")]
     attempts = 1
     if args and args[-1].isdigit():
         attempts = max(1, int(args.pop()))
     targets = args
     unknown = [t for t in targets if t not in APPLE_HOME_WORLD_XY]
     if not targets or unknown:
-        print("Usage: python3 full_layer_grasp.py <apple_XX> [<apple_XX> ...] [attempts per apple] [place]")
+        print("Usage: python3 full_layer_grasp.py <apple_XX> [<apple_XX> ...] "
+              "[attempts per apple] [place] [predict]")
         if unknown:
             print(f"Unknown apple(s): {', '.join(unknown)}")
         sys.exit(1)
@@ -1925,6 +1974,8 @@ def main():
     print("outcome: held = picked and held through the lift; not_held = grasp failed; "
           "not_positioned = apple knocked before closing; sim_frozen = Gazebo stopped"
           + ("; placed = in the crate; not_placed = picked but missed the crate" if place else ""))
+    if VLM_PREDICT_VERIFY:
+        print(pv.summary(PREDICT_VERIFY_RECORDS))
 
 
 if __name__ == '__main__':

@@ -1717,6 +1717,9 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             for g, v in gaps.items()))
         four = [v for g, v in gaps.items() if g != "R_Thumb" and v is not None]
         if len(four) == 4:
+            # Kept so other layers can score "is the hand centred?" against a measurement
+            # (vlm_predict_verify.py) instead of re-deriving it from the printed line.
+            REC["gap_spread"] = float(max(four) - min(four))
             print(f"    spread across the four fingers: {(max(four) - min(four)) * 1000:.0f}mm"
                   + ("  <-- even, the apple is centred"
                      if (max(four) - min(four)) < 0.008

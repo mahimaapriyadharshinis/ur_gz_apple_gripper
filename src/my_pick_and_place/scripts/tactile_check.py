@@ -14,6 +14,13 @@ Usage (simulation started with fingertip sensors):
     bash start_everything.sh tactile        # terminal 1
     python3 tactile_check.py                # terminal 2, prints until Ctrl+C
     python3 tactile_check.py --once         # one reading, for a quick check
+    python3 tactile_check.py --csv /tmp/tactile.csv   # also log every sample with times
+
+The CSV is what the numbers should be read from. A peak over a whole run is dominated by
+impact spikes -- the apple brushed on the way in, or a dropped apple striking a finger --
+which measured 91N and 107N while the apple itself weighs about 7N. The grip force is the
+SUSTAINED value while the hand holds the apple, and that needs samples with timestamps
+next to the simulation clock, not a maximum.
 """
 
 import sys
@@ -55,6 +62,8 @@ class TactileCheck(Node):
         # is still visible afterwards instead of scrolling past.
         self.peak = {}
         self.effort_peak = {}
+        self.sim_time = None
+        self.csv = None
         for finger, (joint, sensor) in FINGERTIP_SENSORS.items():
             self.create_subscription(
                 Wrench, topic_for(joint, sensor),
@@ -72,10 +81,35 @@ class TactileCheck(Node):
         self.peak[finger] = max(self.peak.get(finger, 0.0), mag - self.baseline[finger])
 
     def _joint_cb(self, msg):
+        self.sim_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         for name, eff in zip(msg.name, msg.effort):
             if name.endswith("_Pitch") or name.endswith("_DIP"):
                 self.effort[name] = eff
                 self.effort_peak[name] = max(self.effort_peak.get(name, 0.0), abs(eff))
+
+    def open_csv(self, path):
+        """One row per sample: wall time, simulation time, then force and effort per
+        finger, so a reading can be matched to the phase of the grasp it came from."""
+        self.csv = open(path, "w", encoding="utf-8")
+        cols = ["wall_s", "sim_s"]
+        for finger in FINGERTIP_SENSORS:
+            cols += [f"{finger.lower()}_N", f"{finger.lower()}_Nm"]
+        self.csv.write(",".join(cols) + "\n")
+        return path
+
+    def write_csv(self, started):
+        if self.csv is None:
+            return
+        row = [f"{time.time() - started:.2f}",
+               "" if self.sim_time is None else f"{self.sim_time:.3f}"]
+        for finger, (joint, _) in FINGERTIP_SENSORS.items():
+            vec = self.force.get(finger)
+            mag = None if vec is None else sum(v * v for v in vec) ** 0.5
+            row.append("" if mag is None else f"{mag - self.baseline.get(finger, 0.0):.3f}")
+            eff = self.effort.get(joint)
+            row.append("" if eff is None else f"{abs(eff):.3f}")
+        self.csv.write(",".join(row) + "\n")
+        self.csv.flush()
 
     def peak_line(self):
         """Highest force and highest effort seen so far, per finger."""
@@ -101,6 +135,10 @@ class TactileCheck(Node):
 
 def main():
     once = "--once" in sys.argv
+    csv_path = None
+    if "--csv" in sys.argv:
+        i = sys.argv.index("--csv")
+        csv_path = sys.argv[i + 1] if len(sys.argv) > i + 1 else "/tmp/tactile.csv"
     rclpy.init()
     node = TactileCheck()
     print("Waiting for the fingertip sensor topics (start the simulation with "
@@ -127,11 +165,15 @@ def main():
     print("force above baseline (N) / joint effort at the same joint (Nm)")
     print("   both should rise together when a finger touches the apple, and the force "
           "should keep rising after effort saturates at 1.50Nm.\n")
+    if csv_path:
+        print(f"logging every sample to {node.open_csv(csv_path)}")
+    started = time.time()
     ticks = 0
     try:
         while rclpy.ok():
             for _ in range(10):
                 rclpy.spin_once(node, timeout_sec=0.1)
+            node.write_csv(started)
             print(node.line(), flush=True)
             ticks += 1
             if ticks % 10 == 0:
@@ -141,6 +183,8 @@ def main():
     except KeyboardInterrupt:
         print()
     print(node.peak_line())
+    if node.csv is not None:
+        node.csv.close()
     node.destroy_node()
     try:
         rclpy.shutdown()

@@ -985,6 +985,21 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 return False
         return False
 
+    # Read-only touch record over the WHOLE closing (only when a during_squeeze hook is
+    # given): every finger's position, command and strongest-joint load after each step.
+    closing_samples = []
+
+    def sample_closing(phase):
+        if during_squeeze is None:
+            return
+        loads = finger_loads(node)
+        row = {"phase": phase, "fingers": {}}
+        for g in FINGER_GROUPS:
+            pos = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))[0]
+            row["fingers"][g] = {"pos": pos, "cmd": current[g], "load": loads[g],
+                                 "contact_flag": bool(contacted[g])}
+        closing_samples.append(row)
+
     def drive(groups, limit):
         steps = int((limit - start_pitch) / CLOSE_STEP) + 2
         for _ in range(steps):
@@ -996,6 +1011,7 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
             node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
                                  thumb_roll=THUMB_ROLL)
             step_wait(on_sample=sample)
+            sample_closing("close")
             if not moved or all(contacted[g] for g in groups):
                 break
 
@@ -1199,9 +1215,11 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
 
         if during_squeeze is not None:
             sample_touch(squeezed)
+            sample_closing("squeeze")
             if not touch_decided[0] and squeezed >= observe_rad - 1e-9:
                 touch_decided[0] = True
                 override = during_squeeze(node, {"samples": list(touch_samples),
+                                                 "closing": list(closing_samples),
                                                  "squeeze_extra": squeeze_extra,
                                                  "squeezed_rad": squeezed}) or {}
                 if "squeeze_extra" in override:

@@ -1524,12 +1524,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             with what was seen, and choose how far the squeeze goes. Moves nothing."""
             contacts = (self._fg_contacts.stop()
                         if getattr(self, "_fg_contacts", None) is not None else {})
-            features = fg.touch_features_from_squeeze(info["samples"], fg_cfg)
+            features = fg.touch_features_from_closing(info.get("closing"), fg_cfg)
             calibration = fg.load_json(fg.CALIBRATION_PATH, {})
             touch = fg.touch_estimate(features, calibration)
             fused = fg.fuse(seen.get("fg_vision"), touch)
             decision = fg.decide(fused, fg_cfg, tested_squeeze=info["squeeze_extra"])
-            seen.update(fg_samples=info["samples"], fg_contacts=contacts,
+            seen.update(fg_samples=info.get("closing"), fg_contacts=contacts,
                         fg_features=features, fg_touch=touch, fg_fused=fused,
                         fg_decision=decision)
             vis = seen.get("fg_vision") or {}

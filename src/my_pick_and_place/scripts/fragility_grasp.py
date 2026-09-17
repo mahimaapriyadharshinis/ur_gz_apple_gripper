@@ -126,6 +126,13 @@ def vision_query(frame, url, model, ask=None):
     return out
 
 
+# Word -> fragility, as the middle of the low / middle / high third of the 0-10 scale. These
+# only translate the model's own three-way answers onto the scale; they say nothing about
+# any particular object.
+RIPENESS_SCALE = {"under-ripe": 1.7, "unripe": 1.7, "ripe": 5.0, "overripe": 8.3}
+FIRMNESS_SCALE = {"firm": 1.7, "medium": 5.0, "soft": 8.3}
+
+
 def vision_estimate(vlm_result, cfg):
     """The vision model's fragility (0-10) and a weight for it."""
     vlm_result = vlm_result or {}
@@ -138,8 +145,23 @@ def vision_estimate(vlm_result, cfg):
         conf = float(vlm_result.get("confidence", 0.0))
     except (TypeError, ValueError):
         conf = 0.0
+    # The model's WORDS track what it sees better than its number: on a green apple (true
+    # fragility 1) it answered "under-ripe", "firm" -- correct -- and fragility_score 5,
+    # the same 5 it gave all ten apples. So when it gives ripeness/firmness, those set the
+    # estimate (on the 0-10 scale: the low, middle and high thirds), and its number is
+    # kept only as a fallback. The scorecard judges whether this helps.
+    words = []
+    for key, table in (("ripeness", RIPENESS_SCALE), ("firmness", FIRMNESS_SCALE)):
+        value = str(vlm_result.get(key, "")).strip().lower()
+        if value in table:
+            words.append(table[value])
+    model_score = _clamp(frag, 0.0, 10.0)
+    if words:
+        frag = sum(words) / len(words)
     # A model that could not see (fallback answer) reports confidence 0 -> no weight.
     return {"source": "vision", "fragility": _clamp(frag, 0.0, 10.0),
+            "from": "ripeness/firmness words" if words else "model score",
+            "model_score": model_score,
             "confidence": _clamp(conf, 0.0, 1.0) * float(cfg["vision_weight"]),
             "label": vlm_result.get("object_name"),
             "ripeness": vlm_result.get("ripeness"), "firmness": vlm_result.get("firmness")}
@@ -174,6 +196,44 @@ def touch_features_from_squeeze(samples, cfg):
     return {"sink_ratio": statistics.median(sink) if sink else None,
             "stiffness_nm_per_rad": statistics.median(stiff) if stiff else None,
             "fingers_used": sorted(used), "steps": max(0, len(samples or []) - 1)}
+
+
+def touch_features_from_closing(closing, cfg, load_threshold_nm=0.10):
+    """Touch from the whole closing, for the four fingers, whatever the contact flag says.
+
+    For each finger, find the first step its strongest-joint load rises above
+    load_threshold_nm (it has met the apple), then over the following steps in which it
+    was still being commanded forward, measure how far it actually moved per rad
+    commanded (sink) and how its load rose per rad moved (stiffness, below the cap).
+    A finger that never loads contributes nothing."""
+    sink, stiff, used, first_touch = [], [], set(), {}
+    rows = closing or []
+    for g in FINGERS_FOR_TOUCH:
+        touched_at = None
+        for i, row in enumerate(rows):
+            f = row["fingers"].get(g)
+            if f and f.get("load", 0.0) > load_threshold_nm:
+                touched_at = i
+                break
+        if touched_at is None:
+            continue
+        first_touch[g] = touched_at
+        for a, b in zip(rows[touched_at:], rows[touched_at + 1:]):
+            fa, fb = a["fingers"].get(g), b["fingers"].get(g)
+            if not fa or not fb or fa.get("pos") is None or fb.get("pos") is None:
+                continue
+            dcmd = fb["cmd"] - fa["cmd"]
+            if dcmd <= 1e-6:
+                continue
+            dpos = fb["pos"] - fa["pos"]
+            sink.append(_clamp(dpos / dcmd, -0.5, 1.5))
+            used.add(g)
+            if fa["load"] < cfg["effort_saturation_nm"] and dpos > 1e-4:
+                stiff.append((fb["load"] - fa["load"]) / dpos)
+    return {"sink_ratio": statistics.median(sink) if sink else None,
+            "stiffness_nm_per_rad": statistics.median(stiff) if stiff else None,
+            "fingers_used": sorted(used), "steps": len(sink),
+            "first_touch_step": first_touch}
 
 
 def touch_features(probe_report, cfg):

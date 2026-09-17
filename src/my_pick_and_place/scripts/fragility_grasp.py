@@ -42,6 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "fragility_config.json")
 CALIBRATION_PATH = os.path.join(HERE, "touch_calibration.json")
 VISION_CALIBRATION_PATH = os.path.join(HERE, "vision_calibration.json")
+COLOUR_CALIBRATION_PATH = os.path.join(HERE, "colour_calibration.json")
 FRAMES_DIR = os.path.expanduser("~/fragility_frames")
 RECORDS_PATH = os.path.expanduser("~/fragility_records.jsonl")
 TRUTH_PATH = os.path.join(HERE, "..", "..", "apple_gripper_sim", "fragility_truth.json")
@@ -237,6 +238,62 @@ def vision_estimate(vlm_result, cfg, calibration=None):
             "confidence": weight,
             "label": vlm_result.get("object_name"),
             "ripeness": vlm_result.get("ripeness"), "firmness": vlm_result.get("firmness")}
+
+
+# --- 1b. SEE, measured: the apple's hue from the camera pixels -----------------------------
+def colour_features(frame, min_pixels=300):
+    """The apple's hue, measured directly from the gripper-camera image.
+
+    A second, simpler way of seeing, next to the vision model. The model's answers varied
+    between runs for the same apple; a pixel measurement does not. It does not know what
+    any hue means -- fit_vision_calibration.py fits hue to true fragility from labelled
+    attempts, and until then it carries no weight.
+
+    Apple pixels are those whose chromaticity (colour with brightness divided out) differs
+    from the table's. The table is sampled from the right-hand part of the image, which in
+    every saved frame is bare table; its shadow has the table's chromaticity, so shadow is
+    excluded too. Rows below 420 hold the hand and are ignored."""
+    if frame is None:
+        return {"hue_deg": None, "apple_pixels": 0, "note": "no image"}
+    import numpy as np
+    img = frame[:420].astype(np.float32) + 1.0
+    total = img.sum(axis=2, keepdims=True)
+    chroma = img / total                                   # b, g, r shares (BGR image)
+    table = np.median(chroma[:250, 450:].reshape(-1, 3), axis=0)
+    dist = np.linalg.norm(chroma - table, axis=2)
+    bright = img.max(axis=2) > 25                          # skip near-black pixels
+    mask = (dist > 0.08) & bright
+    n = int(mask.sum())
+    if n < min_pixels:
+        return {"hue_deg": None, "apple_pixels": n, "note": "too few apple pixels"}
+    b, g, r = (img[..., 0][mask], img[..., 1][mask], img[..., 2][mask])
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    delta = np.maximum(mx - mn, 1e-6)
+    hue = np.where(mx == r, ((g - b) / delta) % 6.0,
+                   np.where(mx == g, (b - r) / delta + 2.0, (r - g) / delta + 4.0)) * 60.0
+    # circular mean, so hues either side of 0 deg (red / crimson) average correctly
+    ang = np.deg2rad(hue)
+    mean = float(np.rad2deg(np.arctan2(np.sin(ang).mean(), np.cos(ang).mean())) % 360.0)
+    # distance travelled from green towards crimson, continuous across 0 deg
+    from_green = (105.0 - mean) % 360.0
+    if from_green > 240.0:
+        from_green -= 360.0
+    return {"hue_deg": round(mean, 1), "hue_from_green_deg": round(from_green, 1),
+            "apple_pixels": n}
+
+
+def calibrated_estimate(source, value, calibration):
+    """Fragility from one measured value using its fitted calibration; zero weight without
+    a usable one."""
+    calibration = calibration or {}
+    if value is None or calibration.get("confidence", 0.0) <= 0.0:
+        return {"source": source, "fragility": None, "confidence": 0.0, "value": value,
+                "note": ("not calibrated yet" if not calibration else
+                         f"calibration unusable: {calibration.get('note', 'low fit')}")}
+    frag = _clamp(calibration["a"] + calibration["b"] * value, 0.0, 10.0)
+    return {"source": source, "fragility": frag, "value": value,
+            "confidence": float(calibration["confidence"])}
 
 
 # --- 2. TOUCH -------------------------------------------------------------------------------
@@ -476,7 +533,7 @@ def record(rec, path=RECORDS_PATH):
 def score(records, truth):
     """Accuracy of each estimate against the world's true fragility. Truth is read only
     here, after every decision has already been made."""
-    rows = {"vision": [], "touch": [], "fused": [], "baseline": []}
+    rows = {"vision": [], "colour": [], "touch": [], "fused": [], "baseline": []}
     picked = 0
     for r in records:
         true_f = (truth.get(r.get("apple")) or {}).get("fragility")
@@ -485,7 +542,7 @@ def score(records, truth):
             continue
         # "baseline" = always guessing the middle of the scale; vision must beat it.
         rows["baseline"].append(5.0 - true_f)
-        for key in ("vision", "touch", "fused"):
+        for key in ("vision", "colour", "touch", "fused"):
             block = r.get(key) or {}
             est = block.get("prior_fragility", block.get("fragility")) if key == "vision" \
                 else block.get("fragility")

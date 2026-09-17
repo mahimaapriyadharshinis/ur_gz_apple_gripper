@@ -1512,6 +1512,12 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 seen["fg_frame"] = frame_info
                 seen["fg_vision"] = fg.vision_estimate(
                     raw, fg_cfg, fg.load_json(fg.VISION_CALIBRATION_PATH, {}))
+                colour = fg.colour_features(frame)
+                seen["fg_colour_features"] = colour
+                seen["fg_colour"] = fg.calibrated_estimate(
+                    "colour", colour.get("hue_from_green_deg"),
+                    fg.load_json(fg.COLOUR_CALIBRATION_PATH, {}))
+                self.get_logger().info(f"[Fragility colour] {colour}")
                 if getattr(self, "_fg_contacts", None) is None:
                     self._fg_contacts = fg.ContactMonitor(self)
                 self._fg_contacts.start()
@@ -1538,14 +1544,17 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             features = fg.touch_features_from_closing(info.get("closing"), fg_cfg)
             calibration = fg.load_json(fg.CALIBRATION_PATH, {})
             touch = fg.touch_estimate(features, calibration)
-            fused = fg.fuse(seen.get("fg_vision"), touch)
+            fused = fg.fuse(seen.get("fg_vision"), seen.get("fg_colour"), touch)
             decision = fg.decide(fused, fg_cfg, tested_squeeze=info["squeeze_extra"])
             seen.update(fg_samples=info.get("closing"), fg_contacts=contacts,
                         fg_features=features, fg_touch=touch, fg_fused=fused,
                         fg_decision=decision)
             vis = seen.get("fg_vision") or {}
+            col = seen.get("fg_colour") or {}
             print(f"  [Fragility] vision {vis.get('fragility')} ({vis.get('ripeness')}, "
-                  f"weight {vis.get('confidence', 0):.2f}), touch {touch.get('fragility')} "
+                  f"weight {vis.get('confidence', 0):.2f}), colour {col.get('fragility')} "
+                  f"(hue {col.get('value')}, weight {col.get('confidence', 0):.2f}), "
+                  f"touch {touch.get('fragility')} "
                   f"(weight {touch.get('confidence', 0):.2f}), fused {fused.get('fragility')} "
                   f"-> squeeze {decision['squeeze']:.3f} rad"
                   f"{' [fallback: ' + decision['why'] + ']' if decision['fallback'] else ''}"
@@ -1624,6 +1633,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                       "held": bool(lifted_ok), "vision": seen.get("fg_vision"),
                       "vision_raw": seen.get("fg_vision_raw"),
                       "frame": seen.get("fg_frame"),
+                      "colour": seen.get("fg_colour"),
+                      "colour_features": seen.get("fg_colour_features"),
                       "touch": seen.get("fg_touch"), "touch_features": seen.get("fg_features"),
                       "squeeze_samples": seen.get("fg_samples"),
                       "contacts": seen.get("fg_contacts"),

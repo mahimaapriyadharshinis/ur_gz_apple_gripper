@@ -19,7 +19,8 @@ Fragility is assigned in an order unrelated to size (sizes rise with the apple n
 an estimator cannot get fragility right just by looking at how big an apple is.
 
 Softer = lower contact stiffness kp, spaced evenly on a log scale from 1e6 (firm) to 1e3
-(very soft), and colour moving from firm green-red through ripe red to overripe brown.
+(very soft), and colour hue stepping from green (firm) through yellow, orange and red to
+crimson (very soft) -- hue, because shadow changes an apple's brightness but not its hue.
 Whether the physics engine actually honours kp is NOT assumed: the first logged run in
 this world measures it (see fit_touch_calibration.py).
 
@@ -43,9 +44,17 @@ FRAGILITY = {"apple_01": 7, "apple_02": 2, "apple_03": 9, "apple_04": 4, "apple_
 
 KP_FIRM, KP_SOFT = 1.0e6, 1.0e3
 
-FIRM_RGB = (0.55, 0.62, 0.20)      # hard, under-ripe
-RIPE_RGB = (0.77, 0.12, 0.16)      # the colour every apple has in the normal world
-SOFT_RGB = (0.36, 0.14, 0.08)      # overripe, bruised brown
+# Colour: HUE carries fragility, stepping from green (0, firm, under-ripe) down through
+# yellow, orange and red to crimson (10, very soft, overripe), 12 degrees per point.
+# The first version went green -> red -> dark brown, where the last half mostly DARKENED
+# the apple. The gripper camera sees apples partly in their own shadow, which also darkens
+# them, so a medium red apple (fragility 4) looked like the soft brown one (9) and the
+# vision model called both overripe. Shadow scales brightness but leaves hue unchanged,
+# so hue survives it. Brightness still falls slightly with ripeness, but is not the cue.
+HUE_FIRM_DEG = 105.0
+HUE_STEP_DEG = 12.0
+SATURATION = 0.85
+VALUE_FIRM, VALUE_STEP = 0.78, 0.02
 
 
 def kp_for(f):
@@ -54,11 +63,10 @@ def kp_for(f):
 
 
 def colour_for(f):
-    if f <= 5:
-        t, a, b = f / 5.0, FIRM_RGB, RIPE_RGB
-    else:
-        t, a, b = (f - 5) / 5.0, RIPE_RGB, SOFT_RGB
-    return tuple(round(a[i] + (b[i] - a[i]) * t, 3) for i in range(3))
+    import colorsys
+    hue = (HUE_FIRM_DEG - HUE_STEP_DEG * f) % 360.0
+    r, g, b = colorsys.hsv_to_rgb(hue / 360.0, SATURATION, VALUE_FIRM - VALUE_STEP * f)
+    return (round(r, 3), round(g, 3), round(b, 3))
 
 
 def build_model(name, f):

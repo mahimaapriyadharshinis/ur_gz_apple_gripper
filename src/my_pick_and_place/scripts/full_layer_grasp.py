@@ -62,6 +62,26 @@ MAX_PITCH_CEILING = 1.25
 # Measured so far: 0.05 rad did not hold the apple (3 of 5 fingers, no lift) and 0.12
 # rad picked all ten apples. The ends of this range must each pick a light and a heavy
 # apple before VISION_SETS_GRIP is switched on (pocket_grasp_test.py squeeze=...).
+# Which world start_everything.sh launched (it writes the path here). A respawn must
+# recreate the SAME model the world loaded: the fragility world includes each apple as
+# model://fragile_apple_XX under the name apple_XX, and respawning model://apple_XX there
+# silently swapped in the normal apple -- on 17 Sep apple_09 was respawned once and from
+# then on the camera saw the normal, green apple_09, which it correctly judged firm.
+WORLD_MARKER = "/tmp/apple_world_in_use"
+
+
+def model_uri_name(model_name):
+    """model:// name to create for an entity called model_name in the running world."""
+    try:
+        with open(WORLD_MARKER, encoding="utf-8") as fh:
+            world = fh.read()
+    except OSError:
+        return model_name
+    if "apple_world_fragility" in world and model_name.startswith("apple_"):
+        return "fragile_" + model_name
+    return model_name
+
+
 # How long to wait for the apple's pose (wall clock). The bridge publishes in simulated
 # time, so at 0.03x real time a 10s wait was too short.
 POSE_WAIT_S = 60.0
@@ -880,16 +900,17 @@ class FullLayerGraspNode(Node):
             shell=True, capture_output=True, text=True)
         time.sleep(0.5)
 
+        uri_name = model_uri_name(model_name)
         create_req = (
             'sdf_filename: "model://%s" name: "%s" '
-            'pose: {position: {x: %f y: %f z: %f}}' % (model_name, model_name, x, y, z))
+            'pose: {position: {x: %f y: %f z: %f}}' % (uri_name, model_name, x, y, z))
         result = subprocess.run(
             "ign service -s /world/apple_world/create "
             "--reqtype ignition.msgs.EntityFactory --reptype ignition.msgs.Boolean "
             "--timeout 5000 --req '%s'" % create_req,
             shell=True, capture_output=True, text=True)
         self.get_logger().info(
-            f"Respawn {model_name} at ({x:.3f}, {y:.3f}, {z:.3f}): "
+            f"Respawn {model_name} (model://{uri_name}) at ({x:.3f}, {y:.3f}, {z:.3f}): "
             f"stdout={result.stdout.strip()!r} stderr={result.stderr.strip()!r}")
         if settle_sec:
             time.sleep(settle_sec)

@@ -62,6 +62,9 @@ if [ "$FRAGILITY" = true ]; then
     fi
     echo "=== Using the FRAGILITY world (apples differ in softness and colour) ==="
 fi
+# Record which world is running, so a respawned apple is recreated from the same
+# model the world loaded (full_layer_grasp.model_uri_name).
+echo "$WORLD" > /tmp/apple_world_in_use
 if [ "$TACTILE" = true ]; then
     echo "=== Building the robot WITH fingertip force sensors (tactile mode) ==="
     # simulation_controllers MUST be passed here. The launch file normally supplies

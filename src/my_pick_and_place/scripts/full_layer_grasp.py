@@ -786,6 +786,7 @@ class FullLayerGraspNode(Node):
     def _camera_cb(self, msg):
         try:
             self.latest_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            self.latest_frame_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         except Exception:
             pass
 
@@ -1497,10 +1498,20 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             plan = self.layer2_imagination(vlm_result)
             seen["vlm"], seen["plan"] = vlm_result, plan
             if FRAGILITY_MODE != "off":
-                raw = fg.vision_query(self.latest_frame, OLLAMA_URL, MODEL_NAME)
-                self.get_logger().info(f"[Fragility vision] {raw}")
+                frame = self.latest_frame
+                frame_info = fg.frame_info(getattr(self, "latest_frame_stamp", None),
+                                           getattr(self, "joint_stamp", None))
+                frame_info["path"] = fg.save_frame(frame, target_name)
+                raw = fg.vision_query_consistent(frame, OLLAMA_URL, MODEL_NAME,
+                                                 n=int(fg_cfg["vision_votes"]))
+                self.get_logger().info(
+                    f"[Fragility vision] votes {raw.get('votes')} -> ripeness "
+                    f"{raw.get('ripeness')}, firmness {raw.get('firmness')}, agreement "
+                    f"{raw.get('agreement')}; frame {frame_info}")
                 seen["fg_vision_raw"] = raw
-                seen["fg_vision"] = fg.vision_estimate(raw, fg_cfg)
+                seen["fg_frame"] = frame_info
+                seen["fg_vision"] = fg.vision_estimate(
+                    raw, fg_cfg, fg.load_json(fg.VISION_CALIBRATION_PATH, {}))
                 if getattr(self, "_fg_contacts", None) is None:
                     self._fg_contacts = fg.ContactMonitor(self)
                 self._fg_contacts.start()
@@ -1612,6 +1623,7 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             fg_rec = {"apple": target_name, "mode": FRAGILITY_MODE, "outcome": outcome,
                       "held": bool(lifted_ok), "vision": seen.get("fg_vision"),
                       "vision_raw": seen.get("fg_vision_raw"),
+                      "frame": seen.get("fg_frame"),
                       "touch": seen.get("fg_touch"), "touch_features": seen.get("fg_features"),
                       "squeeze_samples": seen.get("fg_samples"),
                       "contacts": seen.get("fg_contacts"),

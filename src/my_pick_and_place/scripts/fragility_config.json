@@ -8,5 +8,7 @@
   "effort_saturation_nm": 1.45,
   "_effort_saturation_nm_source": "finger joint effort caps at 1.50 Nm; a finger already there cannot report further stiffness",
   "observe_rad": 0.03,
-  "_observe_rad_source": "touch is read over the first 0.03 rad of the normal squeeze (5 steps), then the rest of the squeeze is chosen; must stay below squeeze_min_rad. Replaces the 0.02 rad probe, which dropped 3 of 10 apples"
+  "_observe_rad_source": "touch is read over the first 0.03 rad of the normal squeeze (5 steps), then the rest of the squeeze is chosen; must stay below squeeze_min_rad. Replaces the 0.02 rad probe, which dropped 3 of 10 apples",
+  "vision_votes": 3,
+  "_vision_votes_source": "the 3B model called the same green apple under-ripe in two runs and overripe in a third, so one answer is not enough; three calls add about 3 s per attempt"
 }

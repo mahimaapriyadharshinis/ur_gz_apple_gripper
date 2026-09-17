@@ -16,7 +16,11 @@ Nothing in the decision is a per-object constant. The only fixed numbers are the
 band and the probe size (fragility_config.json), and each records where it came from.
 
 Trust is earned, not assumed:
-  * vision's weight is the model's own stated confidence, scaled by vision_weight;
+  * vision is asked vision_votes times and the answers are voted on; its weight is ZERO
+    until fit_vision_calibration.py has fitted its estimates to known fragility with a
+    good enough fit (then: fit quality x how much the votes agreed). A 3B model called the
+    same green apple under-ripe twice and overripe once, so its own stated confidence
+    (0.8-0.9 every time) is not a usable weight;
   * touch's weight is ZERO until fit_touch_calibration.py has fitted touch readings to
     known fragility with a good enough fit. If the simulation does not actually make soft
     objects feel soft, the fit will be poor, touch keeps zero weight, and the records say
@@ -37,6 +41,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "fragility_config.json")
 CALIBRATION_PATH = os.path.join(HERE, "touch_calibration.json")
+VISION_CALIBRATION_PATH = os.path.join(HERE, "vision_calibration.json")
+FRAMES_DIR = os.path.expanduser("~/fragility_frames")
 RECORDS_PATH = os.path.expanduser("~/fragility_records.jsonl")
 TRUTH_PATH = os.path.join(HERE, "..", "..", "apple_gripper_sim", "fragility_truth.json")
 
@@ -45,6 +51,7 @@ DEFAULT_CONFIG = {
     "squeeze_max_rad": 0.12,
     "observe_rad": 0.03,
     "vision_weight": 1.0,
+    "vision_votes": 3,
     "effort_saturation_nm": 1.45,
 }
 
@@ -133,7 +140,61 @@ RIPENESS_SCALE = {"under-ripe": 1.7, "unripe": 1.7, "ripe": 5.0, "overripe": 8.3
 FIRMNESS_SCALE = {"firm": 1.7, "medium": 5.0, "soft": 8.3}
 
 
-def vision_estimate(vlm_result, cfg):
+def save_frame(frame, apple, directory=None):
+    """Save exactly the image given to the vision model, so a wrong answer can be checked
+    against what it actually saw. Returns the path, or None."""
+    if frame is None:
+        return None
+    try:
+        import cv2
+        directory = directory or FRAMES_DIR
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, time.strftime("%Y%m%d_%H%M%S") + f"_{apple}.jpg")
+        return path if cv2.imwrite(path, frame) else None
+    except Exception:
+        return None
+
+
+def frame_info(frame_stamp, sim_now):
+    """How old the image is, in simulated seconds. Apples 04-09 were all called 'overripe'
+    straight after the brown apple_03, which is what a stale image would produce."""
+    age = None if (frame_stamp is None or sim_now is None) else round(sim_now - frame_stamp, 3)
+    return {"frame_sim_s": frame_stamp, "sim_now_s": sim_now, "age_sim_s": age}
+
+
+def _majority(values):
+    values = [str(v).strip().lower() for v in values if v not in (None, "")]
+    if not values:
+        return None, 0.0
+    best = max(set(values), key=values.count)
+    return best, values.count(best) / len(values)
+
+
+def vision_query_consistent(frame, url, model, n=3, ask=None):
+    """Ask n times and vote. agreement = share of answers matching the winning ripeness
+    (and firmness); disagreement lowers vision's weight automatically."""
+    answers = [vision_query(frame, url, model, ask=ask) for _ in range(max(1, n))]
+    good = [a for a in answers if "error" not in a]
+    ripeness, r_agree = _majority([a.get("ripeness") for a in good])
+    firmness, f_agree = _majority([a.get("firmness") for a in good])
+    scores = sorted(float(a["fragility_score"]) for a in good
+                    if isinstance(a.get("fragility_score"), (int, float)))
+    confs = [float(a["confidence"]) for a in good
+             if isinstance(a.get("confidence"), (int, float))]
+    agree_parts = [x for x, v in ((r_agree, ripeness), (f_agree, firmness)) if v is not None]
+    return {
+        "ripeness": ripeness, "firmness": firmness,
+        "fragility_score": scores[len(scores) // 2] if scores else None,
+        "confidence": sum(confs) / len(confs) if confs else 0.0,
+        "agreement": round(min(agree_parts), 3) if agree_parts else 0.0,
+        "object_name": _majority([a.get("object_name") for a in good])[0],
+        "votes": [f"{a.get('ripeness')}/{a.get('firmness')}" for a in good],
+        "errors": len(answers) - len(good),
+        "answers": answers,
+    }
+
+
+def vision_estimate(vlm_result, cfg, calibration=None):
     """The vision model's fragility (0-10) and a weight for it."""
     vlm_result = vlm_result or {}
     try:
@@ -158,11 +219,22 @@ def vision_estimate(vlm_result, cfg):
     model_score = _clamp(frag, 0.0, 10.0)
     if words:
         frag = sum(words) / len(words)
-    # A model that could not see (fallback answer) reports confidence 0 -> no weight.
-    return {"source": "vision", "fragility": _clamp(frag, 0.0, 10.0),
+    prior = _clamp(frag, 0.0, 10.0)
+    agreement = float(vlm_result.get("agreement", 1.0))
+    calibration = calibration or {}
+    cal_weight = float(calibration.get("confidence", 0.0))
+    if cal_weight > 0.0 and conf > 0.0:
+        estimate = _clamp(calibration["a"] + calibration["b"] * prior, 0.0, 10.0)
+        weight = cal_weight * agreement * float(cfg["vision_weight"])
+        note = f"calibrated (R^2 {calibration.get('r2', 0):.2f}), votes agreed {agreement:.2f}"
+    else:
+        estimate, weight = prior, 0.0
+        note = ("not calibrated yet -- recorded, but given no weight" if not calibration
+                else f"calibration unusable: {calibration.get('note', 'low fit')}")
+    return {"source": "vision", "fragility": estimate, "prior_fragility": prior,
             "from": "ripeness/firmness words" if words else "model score",
-            "model_score": model_score,
-            "confidence": _clamp(conf, 0.0, 1.0) * float(cfg["vision_weight"]),
+            "model_score": model_score, "agreement": agreement, "note": note,
+            "confidence": weight,
             "label": vlm_result.get("object_name"),
             "ripeness": vlm_result.get("ripeness"), "firmness": vlm_result.get("firmness")}
 
@@ -404,15 +476,19 @@ def record(rec, path=RECORDS_PATH):
 def score(records, truth):
     """Accuracy of each estimate against the world's true fragility. Truth is read only
     here, after every decision has already been made."""
-    rows = {"vision": [], "touch": [], "fused": []}
+    rows = {"vision": [], "touch": [], "fused": [], "baseline": []}
     picked = 0
     for r in records:
         true_f = (truth.get(r.get("apple")) or {}).get("fragility")
         picked += 1 if r.get("held") else 0
         if true_f is None:
             continue
-        for key in rows:
-            est = (r.get(key) or {}).get("fragility")
+        # "baseline" = always guessing the middle of the scale; vision must beat it.
+        rows["baseline"].append(5.0 - true_f)
+        for key in ("vision", "touch", "fused"):
+            block = r.get(key) or {}
+            est = block.get("prior_fragility", block.get("fragility")) if key == "vision" \
+                else block.get("fragility")
             if est is not None:
                 rows[key].append(est - true_f)
     lines = ["", "FRAGILITY SCORECARD (truth used only for scoring)",

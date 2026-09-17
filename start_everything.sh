@@ -8,6 +8,7 @@ set -e
 # this VM) still produces correct, trustworthy results instead of stale ones.
 GUI_FLAG=false
 TACTILE=false
+FRAGILITY=false
 for arg in "$@"; do
     case "$arg" in
         gui) GUI_FLAG=true ;;
@@ -16,6 +17,10 @@ for arg in "$@"; do
         # world and every topic are exactly what picked all ten apples, so the tested
         # result cannot be affected by sensors that are not there.
         tactile) TACTILE=true ;;
+        # "fragility" loads apple_world_fragility.world instead: the same world with
+        # each apple's contact softness and colour set from a true fragility score
+        # (tools/make_fragility_world.py). The normal world is untouched.
+        fragility) FRAGILITY=true ;;
     esac
 done
 
@@ -48,6 +53,15 @@ xacro /home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro > /tm
 
 DESCRIPTION=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/ur5e_dexhand.xacro
 CONTROLLERS=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/merged_controllers.yaml
+WORLD=/home/mahimaa/ur_gz_ws/src/apple_gripper_sim/worlds/apple_world.world
+if [ "$FRAGILITY" = true ]; then
+    WORLD=/home/mahimaa/ur_gz_ws/src/apple_gripper_sim/worlds/apple_world_fragility.world
+    if [ ! -f "$WORLD" ]; then
+        echo "ABORT: $WORLD is missing. Run: python3 tools/make_fragility_world.py"
+        exit 1
+    fi
+    echo "=== Using the FRAGILITY world (apples differ in softness and colour) ==="
+fi
 if [ "$TACTILE" = true ]; then
     echo "=== Building the robot WITH fingertip force sensors (tactile mode) ==="
     # simulation_controllers MUST be passed here. The launch file normally supplies
@@ -80,7 +94,7 @@ setsid ros2 launch ur_simulation_gz ur_sim_control.launch.py \
     ur_type:=ur5e \
     description_file:=$DESCRIPTION \
     controllers_file:=/home/mahimaa/ur_gz_ws/src/my_pick_and_place/urdf/merged_controllers.yaml \
-    world_file:=/home/mahimaa/ur_gz_ws/src/apple_gripper_sim/worlds/apple_world.world \
+    world_file:=$WORLD \
     gazebo_gui:=$GUI_FLAG \
     > /tmp/sim_launch.log 2>&1 < /dev/null &
 disown
@@ -108,16 +122,26 @@ ros2 run ros_gz_bridge parameter_bridge \
 disown
 
 if [ "$TACTILE" = true ]; then
-    echo "=== Starting fingertip force sensor bridges (background) ==="
+    echo "=== Starting finger sensor bridges (background, one process) ==="
+    # One bridge process for all 20 topics: 5 fingertip force_torque sensors and
+    # 15 finger-segment contact sensors. Twenty separate processes would each cost
+    # memory and CPU on a machine already running Gazebo at about 8% of real time.
+    TOPICS=()
     for pair in "R_Index_DIP index_tip_ft" "R_Middle_DIP middle_tip_ft" \
                 "R_Ring_DIP ring_tip_ft" "R_Pinky_DIP pinky_tip_ft" \
                 "R_Thumb_DIP thumb_tip_ft"; do
         set -- $pair
-        ros2 run ros_gz_bridge parameter_bridge \
-            "/world/apple_world/model/ur/joint/$1/sensor/$2/forcetorque@geometry_msgs/msg/Wrench[ignition.msgs.Wrench" \
-            >> /tmp/tactile_bridges.log 2>&1 &
-        disown
+        TOPICS+=("/world/apple_world/model/ur/joint/$1/sensor/$2/forcetorque@geometry_msgs/msg/Wrench[ignition.msgs.Wrench")
     done
+    for finger in index middle ring pinky thumb; do
+        for seg in proximal middle tip; do
+            TOPICS+=("/tactile/${finger}_${seg}@ros_gz_interfaces/msg/Contacts[ignition.msgs.Contacts")
+        done
+    done
+    ros2 run ros_gz_bridge parameter_bridge "${TOPICS[@]}" \
+        > /tmp/tactile_bridges.log 2>&1 &
+    disown
+    echo "    bridging ${#TOPICS[@]} sensor topics"
 fi
 
 echo "=== Starting apple pose bridges (background) ==="

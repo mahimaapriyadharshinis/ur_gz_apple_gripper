@@ -46,6 +46,40 @@
     <xacro:fingertip_ft joint="R_Ring_DIP"   sensor="ring_tip_ft"/>
     <xacro:fingertip_ft joint="R_Pinky_DIP"  sensor="pinky_tip_ft"/>
     <xacro:fingertip_ft joint="R_Thumb_DIP"  sensor="thumb_tip_ft"/>
+
+    <!-- Contact sensors on EVERY finger segment, not just the tips. The force_torque
+         sensors above report the joint's reaction force (about 100N on the thumb while
+         holding a 4N apple) and only see the tip link, so the 12cm apple, held on the
+         inner segments, read 0N while it was held. A contact sensor reports which segment
+         touches what, where, and how deep. Collision names are what the URDF->SDF
+         conversion produces for these links (checked with ign sdf -p). -->
+    <xacro:macro name="segment_contact" params="link topic">
+      <gazebo reference="${link}">
+        <sensor name="${topic}_contact" type="contact">
+          <always_on>1</always_on>
+          <update_rate>${tactile_rate}</update_rate>
+          <topic>/tactile/${topic}</topic>
+          <contact>
+            <collision>${link}_collision</collision>
+          </contact>
+        </sensor>
+      </gazebo>
+    </xacro:macro>
+    <xacro:segment_contact link="Index_Knuckle_1"  topic="index_proximal"/>
+    <xacro:segment_contact link="Index_Middle_1"   topic="index_middle"/>
+    <xacro:segment_contact link="Index_Tip_1"      topic="index_tip"/>
+    <xacro:segment_contact link="Middle_Knuckle_1" topic="middle_proximal"/>
+    <xacro:segment_contact link="Middle_Middle_1"  topic="middle_middle"/>
+    <xacro:segment_contact link="Midle_Tip_1"      topic="middle_tip"/>
+    <xacro:segment_contact link="Ring_Knuckle_1"   topic="ring_proximal"/>
+    <xacro:segment_contact link="Ring_Middle_1"    topic="ring_middle"/>
+    <xacro:segment_contact link="Ring_Tip_1"       topic="ring_tip"/>
+    <xacro:segment_contact link="Pinky_Knuckle_1"  topic="pinky_proximal"/>
+    <xacro:segment_contact link="Pinky_Middle_1"   topic="pinky_middle"/>
+    <xacro:segment_contact link="Pinky_Tip_1"      topic="pinky_tip"/>
+    <xacro:segment_contact link="Thumb_Knuckle_1"  topic="thumb_proximal"/>
+    <xacro:segment_contact link="Thumb_Middle_1"   topic="thumb_middle"/>
+    <xacro:segment_contact link="Thumb_Tip_1"      topic="thumb_tip"/>
   </xacro:if>
 
   <link name="base_footprint"/>

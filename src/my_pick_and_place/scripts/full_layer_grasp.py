@@ -21,6 +21,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from cv_bridge import CvBridge
 import ikpy.chain
 import vlm_predict_verify as pv
+import fragility_grasp as fg
 import sys
 import tf2_ros
 
@@ -74,6 +75,13 @@ VISION_SETS_GRIP = False
 # cannot change a pick. Switched on per run with the "predict" argument.
 VLM_PREDICT_VERIFY = False
 PREDICT_VERIFY_RECORDS = []
+
+# Fragility from vision AND touch, choosing the grip (fragility_grasp.py).
+#   off -- default: not run at all, the grasp is the tested one
+#   log -- probe, estimate and decide, record it, but grip with the tested squeeze
+#   on  -- grip with the decided squeeze (always inside the measured safe band)
+FRAGILITY_MODE = "off"
+FRAGILITY_RECORDS = []
 
 
 def squeeze_for_fragility(fragility):
@@ -1488,6 +1496,8 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 self.get_logger().info(f"[Predict] {seen['pv_pred']}")
             plan = self.layer2_imagination(vlm_result)
             seen["vlm"], seen["plan"] = vlm_result, plan
+            if FRAGILITY_MODE != "off":
+                seen["fg_vision"] = fg.vision_estimate(vlm_result, fg_cfg)
             squeeze = squeeze_for_fragility(vlm_result.get("fragility_score", 5))
             seen["vision_squeeze"] = squeeze
             if not VISION_SETS_GRIP:
@@ -1501,9 +1511,42 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
                 f"{squeeze:.3f} rad past first contact")
             return {"squeeze_extra": squeeze}
 
+        fg_cfg = fg.load_config() if FRAGILITY_MODE != "off" else None
+
+        def after_contact(node, info):
+            """Feel the apple, fuse with what was seen, and choose the squeeze."""
+            if getattr(self, "_fg_contacts", None) is None:
+                self._fg_contacts = fg.ContactMonitor(self)
+            self._fg_contacts.start()
+            probe = info["probe"](fg_cfg["probe_rad"], fg_cfg["probe_settle_sim_s"])
+            contacts = self._fg_contacts.stop()
+            features = fg.touch_features(probe, fg_cfg)
+            calibration = fg.load_json(fg.CALIBRATION_PATH, {})
+            touch = fg.touch_estimate(features, calibration)
+            fused = fg.fuse(seen.get("fg_vision"), touch)
+            decision = fg.decide(fused, fg_cfg, tested_squeeze=info["squeeze_extra"])
+            seen.update(fg_probe=probe, fg_contacts=contacts, fg_features=features,
+                        fg_touch=touch, fg_fused=fused, fg_decision=decision)
+            vis = seen.get("fg_vision") or {}
+            print(f"  [Fragility] vision {vis.get('fragility')} (weight "
+                  f"{vis.get('confidence', 0):.2f}), touch {touch.get('fragility')} (weight "
+                  f"{touch.get('confidence', 0):.2f}), fused {fused.get('fragility')} -> "
+                  f"squeeze {decision['squeeze']:.3f} rad"
+                  f"{' [fallback: ' + decision['why'] + ']' if decision['fallback'] else ''}"
+                  f"{'' if FRAGILITY_MODE == 'on' else ' (log mode: NOT applied)'}")
+            print(f"  [Touch] sink ratio {features.get('sink_ratio')}, stiffness "
+                  f"{features.get('stiffness_nm_per_rad')} Nm/rad, fingers "
+                  f"{features.get('fingers_used')}; contact sensors "
+                  f"{'on' if self._fg_contacts.available else 'not running'}")
+            if FRAGILITY_MODE == "on":
+                return {"squeeze_extra": decision["squeeze"]}
+            return {}
+
         r = working.attempt(self, target_name, working.PALM_TILT, working.PRESHAPE,
                             working.LATERAL, "pick", working.GRASP_DROP, cap_thumb=True,
-                            finish_grasp_move=True, before_close=before_close)
+                            finish_grasp_move=True, before_close=before_close,
+                            after_contact=(after_contact if FRAGILITY_MODE != "off"
+                                           else None))
         rec = dict(working.REC)
 
         if r.get("sim_frozen"):
@@ -1559,6 +1602,16 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             "crate_distance": crate_dist,
             "success": success,
         })
+        if FRAGILITY_MODE != "off" and "fg_decision" in seen:
+            fg_rec = {"apple": target_name, "mode": FRAGILITY_MODE, "outcome": outcome,
+                      "held": bool(lifted_ok), "vision": seen.get("fg_vision"),
+                      "touch": seen.get("fg_touch"), "touch_features": seen.get("fg_features"),
+                      "probe": seen.get("fg_probe"), "contacts": seen.get("fg_contacts"),
+                      "fused": seen.get("fg_fused"), "decision": seen.get("fg_decision"),
+                      "apple_rose_m": rec.get("lift")}
+            fg.record(fg_rec)
+            FRAGILITY_RECORDS.append(fg_rec)
+
         if VLM_PREDICT_VERIFY and "pv_pred" in seen:
             # Fresh frame first: the hand has moved since the prediction was made.
             for _ in range(10):
@@ -1922,9 +1975,16 @@ def main():
     # Picks and holds by default; add "place" to also carry the apple to the crate.
     args = sys.argv[1:]
     place = "place" in args
-    global VLM_PREDICT_VERIFY
+    global VLM_PREDICT_VERIFY, FRAGILITY_MODE
     VLM_PREDICT_VERIFY = "predict" in args
-    args = [a for a in args if a not in ("place", "predict")]
+    for a in args:
+        if a.startswith("fragility="):
+            FRAGILITY_MODE = a.split("=", 1)[1]
+            if FRAGILITY_MODE not in ("off", "log", "on"):
+                print(f"fragility= must be off, log or on, got {a!r}")
+                sys.exit(1)
+    args = [a for a in args if a not in ("place", "predict")
+            and not a.startswith("fragility=")]
     attempts = 1
     if args and args[-1].isdigit():
         attempts = max(1, int(args.pop()))
@@ -1932,7 +1992,7 @@ def main():
     unknown = [t for t in targets if t not in APPLE_HOME_WORLD_XY]
     if not targets or unknown:
         print("Usage: python3 full_layer_grasp.py <apple_XX> [<apple_XX> ...] "
-              "[attempts per apple] [place] [predict]")
+              "[attempts per apple] [place] [predict] [fragility=off|log|on]")
         if unknown:
             print(f"Unknown apple(s): {', '.join(unknown)}")
         sys.exit(1)
@@ -1976,6 +2036,9 @@ def main():
           + ("; placed = in the crate; not_placed = picked but missed the crate" if place else ""))
     if VLM_PREDICT_VERIFY:
         print(pv.summary(PREDICT_VERIFY_RECORDS))
+    if FRAGILITY_MODE != "off":
+        print(fg.score(FRAGILITY_RECORDS, fg.load_json(fg.TRUTH_PATH, {})))
+        print(f"records appended to {fg.RECORDS_PATH}")
 
 
 if __name__ == '__main__':

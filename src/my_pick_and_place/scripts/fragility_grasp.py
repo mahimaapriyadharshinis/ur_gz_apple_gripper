@@ -337,10 +337,29 @@ class ContactMonitor:
                                            lambda msg, n=short: self._cb(n, msg), 10)
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
-        self._thread = threading.Thread(target=self._executor.spin, daemon=True,
+        self._thread = threading.Thread(target=self._spin, daemon=True,
                                         name="fragility_contact_monitor")
         self._thread.start()
         self.available = True
+
+    def _spin(self):
+        try:
+            self._executor.spin()
+        except Exception:
+            # rclpy shutting down underneath the executor at program exit; nothing to do.
+            pass
+
+    def close(self):
+        """Stop the background thread before rclpy shuts down."""
+        if not self.available:
+            return
+        self.available = False
+        try:
+            self._executor.shutdown(timeout_sec=2.0)
+            self._node.destroy_node()
+        except Exception:
+            pass
+        self._thread.join(timeout=3.0)
 
     def _cb(self, short, msg):
         with self._lock:

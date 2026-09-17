@@ -2013,6 +2013,8 @@ def main():
             what = "pick-and-place" if place else "pick"
             print(f"\n{'#' * 72}\n# {target}: {what} attempt {i + 1} of {attempts}\n{'#' * 72}")
             results.append(node.run_for_target(target, place=place))
+    if getattr(node, "_fg_contacts", None) is not None:
+        node._fg_contacts.close()
     node.destroy_node()
     rclpy.shutdown()
 

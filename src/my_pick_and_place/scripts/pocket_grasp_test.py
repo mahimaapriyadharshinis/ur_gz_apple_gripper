@@ -913,7 +913,7 @@ def thumb_tip_clearance(node):
 
 def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                       thumb_yaw=THUMB_GRASP_YAW, squeeze_extra=SQUEEZE_EXTRA,
-                      after_contact=None):
+                      after_contact=None, during_squeeze=None, observe_rad=0.03):
     """Close the four fingers first, then bring the thumb in last.
 
     The thumb tip sits at hand-frame x=0.119 while the apple spans x=0.008 to 0.119 --
@@ -1162,6 +1162,24 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     # pushing the apple out of the hand it just closed around.
     before_squeeze = apple_xyz(node)
     squeezed = probe_total[0]
+
+    # Passive touch (fragility_grasp.py): read, never command. Each sample is taken after a
+    # normal squeeze step, so the fingers move exactly as in the tested grasp.
+    touch_samples = []
+    touch_decided = [during_squeeze is None]
+
+    def sample_touch(squeezed_so_far):
+        row = {"squeezed_rad": squeezed_so_far, "fingers": {}}
+        for g in FINGER_GROUPS:
+            if contacted[g]:
+                pos, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))
+                row["fingers"][g] = {"pos": pos, "effort": abs(eff or 0.0),
+                                     "cmd": current[g]}
+        touch_samples.append(row)
+
+    if during_squeeze is not None:
+        sample_touch(squeezed)
+
     while squeezed < squeeze_extra:
         squeezed += SQUEEZE_STEP
         for g in FINGER_GROUPS:
@@ -1178,6 +1196,19 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
                 _, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (0, 0, 0))
                 peak[g] = max(peak[g], abs(eff or 0.0))
         step_wait(on_sample=track_peak)
+
+        if during_squeeze is not None:
+            sample_touch(squeezed)
+            if not touch_decided[0] and squeezed >= observe_rad - 1e-9:
+                touch_decided[0] = True
+                override = during_squeeze(node, {"samples": list(touch_samples),
+                                                 "squeeze_extra": squeeze_extra,
+                                                 "squeezed_rad": squeezed}) or {}
+                if "squeeze_extra" in override:
+                    # Never undo squeeze already applied.
+                    squeeze_extra = max(float(override["squeeze_extra"]), squeezed)
+                    print(f"  squeeze set by touch+vision after {squeezed:.3f} rad of it: "
+                          f"{squeeze_extra:.3f} rad past first contact")
 
     # How the closing ran in time, and how far each finger is commanded PAST where it
     # actually stands. The same code picked apple_10 4/4 at 0.05-0.07x real time and 0/2
@@ -1314,7 +1345,8 @@ def apple_xyz(node):
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             cap_thumb=False, empty=False, relax=False, finish_grasp_move=False,
-            before_close=None, recentre=False, thumb_mode="spike", after_contact=None):
+            before_close=None, recentre=False, thumb_mode="spike", after_contact=None,
+            during_squeeze=None, observe_rad=0.03):
     """One full grasp attempt: reset, approach, close, lift, measure.
 
     before_close, if given, is called as before_close(node) once the hand is in position
@@ -1839,7 +1871,8 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_now,
         radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW,
-        squeeze_extra=squeeze_extra, after_contact=after_contact)
+        squeeze_extra=squeeze_extra, after_contact=after_contact,
+        during_squeeze=during_squeeze, observe_rad=observe_rad)
     n = sum(contacted.values())
     REC["contacts"] = n
     print(f"  fingers contacted: {n}/5")

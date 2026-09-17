@@ -1497,7 +1497,13 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
             plan = self.layer2_imagination(vlm_result)
             seen["vlm"], seen["plan"] = vlm_result, plan
             if FRAGILITY_MODE != "off":
-                seen["fg_vision"] = fg.vision_estimate(vlm_result, fg_cfg)
+                raw = fg.vision_query(self.latest_frame, OLLAMA_URL, MODEL_NAME)
+                self.get_logger().info(f"[Fragility vision] {raw}")
+                seen["fg_vision_raw"] = raw
+                seen["fg_vision"] = fg.vision_estimate(raw, fg_cfg)
+                if getattr(self, "_fg_contacts", None) is None:
+                    self._fg_contacts = fg.ContactMonitor(self)
+                self._fg_contacts.start()
             squeeze = squeeze_for_fragility(vlm_result.get("fragility_score", 5))
             seen["vision_squeeze"] = squeeze
             if not VISION_SETS_GRIP:
@@ -1513,31 +1519,30 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
 
         fg_cfg = fg.load_config() if FRAGILITY_MODE != "off" else None
 
-        def after_contact(node, info):
-            """Feel the apple, fuse with what was seen, and choose the squeeze."""
-            if getattr(self, "_fg_contacts", None) is None:
-                self._fg_contacts = fg.ContactMonitor(self)
-            self._fg_contacts.start()
-            probe = info["probe"](fg_cfg["probe_rad"], fg_cfg["probe_settle_sim_s"])
-            contacts = self._fg_contacts.stop()
-            features = fg.touch_features(probe, fg_cfg)
+        def during_squeeze(node, info):
+            """Read how the apple responds to the first part of the normal squeeze, fuse
+            with what was seen, and choose how far the squeeze goes. Moves nothing."""
+            contacts = (self._fg_contacts.stop()
+                        if getattr(self, "_fg_contacts", None) is not None else {})
+            features = fg.touch_features_from_squeeze(info["samples"], fg_cfg)
             calibration = fg.load_json(fg.CALIBRATION_PATH, {})
             touch = fg.touch_estimate(features, calibration)
             fused = fg.fuse(seen.get("fg_vision"), touch)
             decision = fg.decide(fused, fg_cfg, tested_squeeze=info["squeeze_extra"])
-            seen.update(fg_probe=probe, fg_contacts=contacts, fg_features=features,
-                        fg_touch=touch, fg_fused=fused, fg_decision=decision)
+            seen.update(fg_samples=info["samples"], fg_contacts=contacts,
+                        fg_features=features, fg_touch=touch, fg_fused=fused,
+                        fg_decision=decision)
             vis = seen.get("fg_vision") or {}
-            print(f"  [Fragility] vision {vis.get('fragility')} (weight "
-                  f"{vis.get('confidence', 0):.2f}), touch {touch.get('fragility')} (weight "
-                  f"{touch.get('confidence', 0):.2f}), fused {fused.get('fragility')} -> "
-                  f"squeeze {decision['squeeze']:.3f} rad"
+            print(f"  [Fragility] vision {vis.get('fragility')} ({vis.get('ripeness')}, "
+                  f"weight {vis.get('confidence', 0):.2f}), touch {touch.get('fragility')} "
+                  f"(weight {touch.get('confidence', 0):.2f}), fused {fused.get('fragility')} "
+                  f"-> squeeze {decision['squeeze']:.3f} rad"
                   f"{' [fallback: ' + decision['why'] + ']' if decision['fallback'] else ''}"
                   f"{'' if FRAGILITY_MODE == 'on' else ' (log mode: NOT applied)'}")
-            print(f"  [Touch] sink ratio {features.get('sink_ratio')}, stiffness "
-                  f"{features.get('stiffness_nm_per_rad')} Nm/rad, fingers "
-                  f"{features.get('fingers_used')}; contact sensors "
-                  f"{'on' if self._fg_contacts.available else 'not running'}")
+            print(f"  [Touch] sink {features.get('sink_ratio')}, stiffness "
+                  f"{features.get('stiffness_nm_per_rad')} Nm/rad over {features.get('steps')} "
+                  f"steps, fingers {features.get('fingers_used')}; contact segments "
+                  f"{sorted(k for k, v in contacts.items() if v.get('apple_contacts'))}")
             if FRAGILITY_MODE == "on":
                 return {"squeeze_extra": decision["squeeze"]}
             return {}
@@ -1545,8 +1550,9 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         r = working.attempt(self, target_name, working.PALM_TILT, working.PRESHAPE,
                             working.LATERAL, "pick", working.GRASP_DROP, cap_thumb=True,
                             finish_grasp_move=True, before_close=before_close,
-                            after_contact=(after_contact if FRAGILITY_MODE != "off"
-                                           else None))
+                            during_squeeze=(during_squeeze if FRAGILITY_MODE != "off"
+                                            else None),
+                            observe_rad=(fg_cfg["observe_rad"] if fg_cfg else 0.03))
         rec = dict(working.REC)
 
         if r.get("sim_frozen"):
@@ -1605,8 +1611,10 @@ with ONLY a valid JSON object (no markdown) with these exact keys:
         if FRAGILITY_MODE != "off" and "fg_decision" in seen:
             fg_rec = {"apple": target_name, "mode": FRAGILITY_MODE, "outcome": outcome,
                       "held": bool(lifted_ok), "vision": seen.get("fg_vision"),
+                      "vision_raw": seen.get("fg_vision_raw"),
                       "touch": seen.get("fg_touch"), "touch_features": seen.get("fg_features"),
-                      "probe": seen.get("fg_probe"), "contacts": seen.get("fg_contacts"),
+                      "squeeze_samples": seen.get("fg_samples"),
+                      "contacts": seen.get("fg_contacts"),
                       "fused": seen.get("fg_fused"), "decision": seen.get("fg_decision"),
                       "apple_rose_m": rec.get("lift")}
             fg.record(fg_rec)

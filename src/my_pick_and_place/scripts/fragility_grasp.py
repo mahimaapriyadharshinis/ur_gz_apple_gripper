@@ -3,8 +3,11 @@
 how hard to grip from that estimate -- instead of using one fixed grip for everything.
 
     1. SEE     gripper camera -> vision model -> fragility guess and its confidence
-    2. TOUCH   after first contact, press the fingers a little further (a probe) and
-               measure how far they sink and how much their load rises
+    2. TOUCH   watch the first part of the squeeze the grasp already does: how far each
+               finger actually sinks per rad it is commanded, and how its load rises.
+               Read only -- no extra motion. (An earlier version pressed an extra
+               0.02 rad and paused 0.3s; that dropped 3 of 10 apples which then picked
+               6 of 6 without it, so touch no longer moves anything.)
     3. FUSE    combine the two, each weighted by how much it has earned trust
     4. DECIDE  squeeze past first contact, chosen inside a MEASURED safe band
     5. RECORD  one line per attempt; truth is only ever used afterwards, for scoring
@@ -40,8 +43,7 @@ TRUTH_PATH = os.path.join(HERE, "..", "..", "apple_gripper_sim", "fragility_trut
 DEFAULT_CONFIG = {
     "squeeze_min_rad": 0.08,
     "squeeze_max_rad": 0.12,
-    "probe_rad": 0.02,
-    "probe_settle_sim_s": 0.3,
+    "observe_rad": 0.03,
     "vision_weight": 1.0,
     "effort_saturation_nm": 1.45,
 }
@@ -80,9 +82,9 @@ def load_config(path=CONFIG_PATH):
     cfg.update({k: v for k, v in load_json(path, {}).items() if not k.startswith("_")})
     if cfg["squeeze_min_rad"] > cfg["squeeze_max_rad"]:
         raise ValueError("fragility_config.json: squeeze_min_rad is above squeeze_max_rad")
-    if cfg["probe_rad"] >= cfg["squeeze_min_rad"]:
-        raise ValueError("fragility_config.json: the probe must be smaller than the "
-                         "gentlest squeeze, or probing alone would over-squeeze")
+    if cfg["observe_rad"] >= cfg["squeeze_min_rad"]:
+        raise ValueError("fragility_config.json: observe_rad must be below the gentlest "
+                         "squeeze, or the decision would come after the grip is already set")
     return cfg
 
 
@@ -91,6 +93,39 @@ def _clamp(v, lo, hi):
 
 
 # --- 1. SEE --------------------------------------------------------------------------------
+RIPENESS_PROMPT = """You are a fruit-handling assistant looking at one fruit in a robot hand.
+First judge its ripeness from colour and skin: under-ripe fruit is green or pale and firm,
+ripe fruit is fully coloured, overripe fruit is dark, brown or dull and soft.
+Then rate how fragile it is to grip.
+Respond with ONLY a valid JSON object (no markdown) with these exact keys:
+{
+  "object_name": "best guess at what the object is",
+  "ripeness": "under-ripe", "ripe" or "overripe",
+  "firmness": "firm", "medium" or "soft",
+  "fragility_score": 0-10 integer, 0 = very firm, 10 = very easily bruised,
+  "confidence": 0.0-1.0 float,
+  "notes": "one short sentence on what you saw"
+}"""
+
+
+def vision_query(frame, url, model, ask=None):
+    """Ask the vision model about ripeness and fragility (fragility mode only; the
+    pipeline's own Layer 1 prompt is left exactly as it was).
+
+    Why a separate prompt: asked directly for fragility, the 3B model answered 5 for all
+    ten apples, including clearly green and clearly brown ones -- an error of 2.5, exactly
+    what always guessing 5 gives. Ripeness from colour and skin is the cue a person uses,
+    so the model is asked for that first. This is judged by the scorecard, not assumed."""
+    import vlm_predict_verify as pv
+    ask = ask or pv.ask_ollama
+    started = time.time()
+    out = ask(RIPENESS_PROMPT, pv.encode_frame(frame), url, model)
+    if not isinstance(out, dict):
+        out = {"error": "model did not return an object"}
+    out["seconds"] = round(time.time() - started, 1)
+    return out
+
+
 def vision_estimate(vlm_result, cfg):
     """The vision model's fragility (0-10) and a weight for it."""
     vlm_result = vlm_result or {}
@@ -106,10 +141,41 @@ def vision_estimate(vlm_result, cfg):
     # A model that could not see (fallback answer) reports confidence 0 -> no weight.
     return {"source": "vision", "fragility": _clamp(frag, 0.0, 10.0),
             "confidence": _clamp(conf, 0.0, 1.0) * float(cfg["vision_weight"]),
-            "label": vlm_result.get("object_name")}
+            "label": vlm_result.get("object_name"),
+            "ripeness": vlm_result.get("ripeness"), "firmness": vlm_result.get("firmness")}
 
 
 # --- 2. TOUCH -------------------------------------------------------------------------------
+FINGERS_FOR_TOUCH = ("R_Index", "R_Middle", "R_Ring", "R_Pinky")
+
+
+def touch_features_from_squeeze(samples, cfg):
+    """From the squeeze samples: for the four fingers (the thumb is preloaded separately and
+    behaves differently), how far each finger actually moved per rad it was commanded
+    (sink: near 0 = it met something rigid, higher = the object gave way), and how much
+    load rose per rad it moved (stiffness, only while below the effort cap).
+
+    Position is not capped, so sink stays informative even when load has saturated --
+    which is what left the earlier probe blind on 9 of 10 apples."""
+    sink, stiff, used = [], [], set()
+    for a, b in zip(samples or [], (samples or [])[1:]):
+        for g in FINGERS_FOR_TOUCH:
+            fa, fb = a["fingers"].get(g), b["fingers"].get(g)
+            if not fa or not fb or fa.get("pos") is None or fb.get("pos") is None:
+                continue
+            dcmd = fb["cmd"] - fa["cmd"]
+            if dcmd <= 1e-6:
+                continue            # this finger was not advanced on this step
+            dpos = fb["pos"] - fa["pos"]
+            sink.append(_clamp(dpos / dcmd, -0.5, 1.5))
+            used.add(g)
+            if fa["effort"] < cfg["effort_saturation_nm"] and dpos > 1e-4:
+                stiff.append((fb["effort"] - fa["effort"]) / dpos)
+    return {"sink_ratio": statistics.median(sink) if sink else None,
+            "stiffness_nm_per_rad": statistics.median(stiff) if stiff else None,
+            "fingers_used": sorted(used), "steps": max(0, len(samples or []) - 1)}
+
+
 def touch_features(probe_report, cfg):
     """From a probe: how far fingers sank per rad commanded (1 = moved freely, 0 = rigid),
     and how much load rose per rad they actually moved. Fingers already at the effort

@@ -1,0 +1,122 @@
+{
+  "apple_01": {
+    "fragility": 7,
+    "kp": 7943.3,
+    "rgba": [
+      0.606,
+      0.128,
+      0.128,
+      1
+    ],
+    "model": "fragile_apple_01",
+    "kp_blocks": 2
+  },
+  "apple_02": {
+    "fragility": 2,
+    "kp": 251188.6,
+    "rgba": [
+      0.638,
+      0.42,
+      0.184,
+      1
+    ],
+    "model": "fragile_apple_02",
+    "kp_blocks": 2
+  },
+  "apple_03": {
+    "fragility": 9,
+    "kp": 1995.3,
+    "rgba": [
+      0.442,
+      0.136,
+      0.096,
+      1
+    ],
+    "model": "fragile_apple_03",
+    "kp_blocks": 2
+  },
+  "apple_04": {
+    "fragility": 4,
+    "kp": 63095.7,
+    "rgba": [
+      0.726,
+      0.22,
+      0.168,
+      1
+    ],
+    "model": "fragile_apple_04",
+    "kp_blocks": 2
+  },
+  "apple_05": {
+    "fragility": 1,
+    "kp": 501187.2,
+    "rgba": [
+      0.594,
+      0.52,
+      0.192,
+      1
+    ],
+    "model": "fragile_apple_05",
+    "kp_blocks": 2
+  },
+  "apple_06": {
+    "fragility": 6,
+    "kp": 15848.9,
+    "rgba": [
+      0.688,
+      0.124,
+      0.144,
+      1
+    ],
+    "model": "fragile_apple_06",
+    "kp_blocks": 2
+  },
+  "apple_07": {
+    "fragility": 3,
+    "kp": 125892.5,
+    "rgba": [
+      0.682,
+      0.32,
+      0.176,
+      1
+    ],
+    "model": "fragile_apple_07",
+    "kp_blocks": 2
+  },
+  "apple_08": {
+    "fragility": 8,
+    "kp": 3981.1,
+    "rgba": [
+      0.524,
+      0.132,
+      0.112,
+      1
+    ],
+    "model": "fragile_apple_08",
+    "kp_blocks": 2
+  },
+  "apple_09": {
+    "fragility": 5,
+    "kp": 31622.8,
+    "rgba": [
+      0.77,
+      0.12,
+      0.16,
+      1
+    ],
+    "model": "fragile_apple_09",
+    "kp_blocks": 2
+  },
+  "apple_10": {
+    "fragility": 0,
+    "kp": 1000000.0,
+    "rgba": [
+      0.55,
+      0.62,
+      0.2,
+      1
+    ],
+    "model": "fragile_apple_10",
+    "kp_blocks": 2
+  }
+}

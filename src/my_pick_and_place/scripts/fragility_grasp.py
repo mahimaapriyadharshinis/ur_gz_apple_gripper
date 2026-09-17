@@ -46,10 +46,24 @@ DEFAULT_CONFIG = {
     "effort_saturation_nm": 1.45,
 }
 
-# Finger segments that carry a contact sensor when the robot is built with tactile:=true.
-SEGMENT_TOPICS = [f"/tactile/{finger}_{seg}"
-                  for finger in ("index", "middle", "ring", "pinky", "thumb")
-                  for seg in ("proximal", "middle", "tip")]
+# Finger segments that carry a contact sensor when the robot is built with tactile:=true:
+# short name -> link. Ignition Fortress ignores the <topic> set in the xacro and publishes
+# each on its default path (confirmed with ign topic -l), so that path is what is used.
+SEGMENTS = {
+    "index_proximal": "Index_Knuckle_1", "index_middle": "Index_Middle_1",
+    "index_tip": "Index_Tip_1",
+    "middle_proximal": "Middle_Knuckle_1", "middle_middle": "Middle_Middle_1",
+    "middle_tip": "Midle_Tip_1",
+    "ring_proximal": "Ring_Knuckle_1", "ring_middle": "Ring_Middle_1", "ring_tip": "Ring_Tip_1",
+    "pinky_proximal": "Pinky_Knuckle_1", "pinky_middle": "Pinky_Middle_1",
+    "pinky_tip": "Pinky_Tip_1",
+    "thumb_proximal": "Thumb_Knuckle_1", "thumb_middle": "Thumb_Middle_1",
+    "thumb_tip": "Thumb_Tip_1",
+}
+
+
+def contact_topic(short, link, world="apple_world", model="ur"):
+    return f"/world/{world}/model/{model}/link/{link}/sensor/{short}_contact/contact"
 
 
 def load_json(path, fallback):
@@ -180,15 +194,15 @@ class ContactMonitor:
             from ros_gz_interfaces.msg import Contacts
         except ImportError:
             return
-        for topic in SEGMENT_TOPICS:
-            node.create_subscription(Contacts, topic,
-                                     lambda msg, t=topic: self._cb(t, msg), 10)
+        for short, link in SEGMENTS.items():
+            node.create_subscription(Contacts, contact_topic(short, link),
+                                     lambda msg, n=short: self._cb(n, msg), 10)
         self.available = True
 
-    def _cb(self, topic, msg):
+    def _cb(self, short, msg):
         if self._window is None:
             return
-        seg = self._window.setdefault(topic.rsplit("/", 1)[-1],
+        seg = self._window.setdefault(short,
                                       {"samples": 0, "apple_contacts": 0, "max_depth_m": 0.0})
         seg["samples"] += 1
         for c in msg.contacts:

@@ -107,7 +107,25 @@ else
 fi
 
 echo "=== Activating hand controller ==="
-ros2 run controller_manager spawner dexhand_controller --controller-manager /controller_manager
+# Retried: once (17 Sep, tactile + fragility) the controller manager existed but did
+# not answer within the spawner's 10s, the script stopped, and the exact same launch
+# worked on the next try. A start-up race, so wait and try again rather than abort.
+# When the first try succeeds -- the normal case -- this behaves exactly as before.
+HAND_OK=false
+for try in 1 2 3 4 5; do
+    if ros2 run controller_manager spawner dexhand_controller \
+        --controller-manager /controller_manager --service-call-timeout 30; then
+        HAND_OK=true
+        break
+    fi
+    echo "    hand controller not ready yet (try $try of 5) -- waiting 20s"
+    sleep 20
+done
+if [ "$HAND_OK" != true ]; then
+    echo "ABORT: the hand controller never activated. Last lines of /tmp/sim_launch.log:"
+    tail -20 /tmp/sim_launch.log
+    exit 1
+fi
 
 echo "=== Starting gripper camera bridge (background) ==="
 ros2 run ros_gz_bridge parameter_bridge \
@@ -133,10 +151,19 @@ if [ "$TACTILE" = true ]; then
         set -- $pair
         TOPICS+=("/world/apple_world/model/ur/joint/$1/sensor/$2/forcetorque@geometry_msgs/msg/Wrench[ignition.msgs.Wrench")
     done
-    for finger in index middle ring pinky thumb; do
-        for seg in proximal middle tip; do
-            TOPICS+=("/tactile/${finger}_${seg}@ros_gz_interfaces/msg/Contacts[ignition.msgs.Contacts")
-        done
+    # Contact sensors: Ignition Fortress ignores the <topic> given in the xacro and
+    # publishes on /world/<world>/model/ur/link/<link>/sensor/<name>/contact
+    # (checked with ign topic -l), so those exact paths are bridged.
+    for pair in "Index_Knuckle_1 index_proximal" "Index_Middle_1 index_middle" \
+                "Index_Tip_1 index_tip" "Middle_Knuckle_1 middle_proximal" \
+                "Middle_Middle_1 middle_middle" "Midle_Tip_1 middle_tip" \
+                "Ring_Knuckle_1 ring_proximal" "Ring_Middle_1 ring_middle" \
+                "Ring_Tip_1 ring_tip" "Pinky_Knuckle_1 pinky_proximal" \
+                "Pinky_Middle_1 pinky_middle" "Pinky_Tip_1 pinky_tip" \
+                "Thumb_Knuckle_1 thumb_proximal" "Thumb_Middle_1 thumb_middle" \
+                "Thumb_Tip_1 thumb_tip"; do
+        set -- $pair
+        TOPICS+=("/world/apple_world/model/ur/link/$1/sensor/$2_contact/contact@ros_gz_interfaces/msg/Contacts[ignition.msgs.Contacts")
     done
     ros2 run ros_gz_bridge parameter_bridge "${TOPICS[@]}" \
         > /tmp/tactile_bridges.log 2>&1 &

@@ -310,39 +310,63 @@ def decide(fused, cfg, tested_squeeze):
 # --- contact sensors (optional) -------------------------------------------------------------
 class ContactMonitor:
     """Listens to the finger-segment contact sensors if they exist (tactile:=true), and
-    summarises a time window: which segments touched the apple and how deep."""
+    summarises a time window: which segments touched the apple and how deep.
 
-    def __init__(self, node):
-        self.node = node
+    It runs on its OWN node, spun by its own executor in a background thread, and must
+    never subscribe on the grasp node. The grasp waits a fixed number of incoming messages
+    per closing step; 15 contact topics at 50Hz on that node made each step 3.1ms of
+    simulated time instead of 8.5ms, so the fingers closed about 2.7x faster than in the
+    tested grasp and read stale positions -- and apples that pick without the monitor
+    dropped with it."""
+
+    def __init__(self, node=None):
         self.available = False
         self._window = None
+        self._lock = None
         try:
+            import threading
+            from rclpy.executors import SingleThreadedExecutor
+            from rclpy.node import Node
             from ros_gz_interfaces.msg import Contacts
         except ImportError:
             return
+        self._lock = threading.Lock()
+        self._node = Node("fragility_contact_monitor")
         for short, link in SEGMENTS.items():
-            node.create_subscription(Contacts, contact_topic(short, link),
-                                     lambda msg, n=short: self._cb(n, msg), 10)
+            self._node.create_subscription(Contacts, contact_topic(short, link),
+                                           lambda msg, n=short: self._cb(n, msg), 10)
+        self._executor = SingleThreadedExecutor()
+        self._executor.add_node(self._node)
+        self._thread = threading.Thread(target=self._executor.spin, daemon=True,
+                                        name="fragility_contact_monitor")
+        self._thread.start()
         self.available = True
 
     def _cb(self, short, msg):
-        if self._window is None:
-            return
-        seg = self._window.setdefault(short,
-                                      {"samples": 0, "apple_contacts": 0, "max_depth_m": 0.0})
-        seg["samples"] += 1
-        for c in msg.contacts:
-            names = f"{c.collision1.name} {c.collision2.name}"
-            if "apple" in names:
-                seg["apple_contacts"] += 1
-                for d in c.depths:
-                    seg["max_depth_m"] = max(seg["max_depth_m"], float(d))
+        with self._lock:
+            if self._window is None:
+                return
+            seg = self._window.setdefault(short, {"samples": 0, "apple_contacts": 0,
+                                                  "max_depth_m": 0.0})
+            seg["samples"] += 1
+            for c in msg.contacts:
+                names = f"{c.collision1.name} {c.collision2.name}"
+                if "apple" in names:
+                    seg["apple_contacts"] += 1
+                    for d in c.depths:
+                        seg["max_depth_m"] = max(seg["max_depth_m"], float(d))
 
     def start(self):
-        self._window = {}
+        if self._lock is None:
+            return
+        with self._lock:
+            self._window = {}
 
     def stop(self):
-        window, self._window = self._window or {}, None
+        if self._lock is None:
+            return {}
+        with self._lock:
+            window, self._window = self._window or {}, None
         return window
 
 

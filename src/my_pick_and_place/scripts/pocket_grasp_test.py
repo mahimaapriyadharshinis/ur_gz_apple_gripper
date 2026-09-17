@@ -912,7 +912,8 @@ def thumb_tip_clearance(node):
 
 
 def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
-                      thumb_yaw=THUMB_GRASP_YAW, squeeze_extra=SQUEEZE_EXTRA):
+                      thumb_yaw=THUMB_GRASP_YAW, squeeze_extra=SQUEEZE_EXTRA,
+                      after_contact=None):
     """Close the four fingers first, then bring the thumb in last.
 
     The thumb tip sits at hand-frame x=0.119 while the apple spans x=0.008 to 0.119 --
@@ -1115,13 +1116,52 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     drive(fingers, MAX_PITCH_CEILING)
     print("  fingers wrapped: %d/4" % sum(1 for g in fingers if contacted[g]))
 
+    # Optional hook between first contact and the squeeze (fragility_grasp.py). It may
+    # press the contacted fingers a little further with probe() to feel the object, and
+    # return {"squeeze_extra": ...} to choose how hard to squeeze. Any probing counts
+    # towards the squeeze, so the total closing past first contact is still exactly
+    # squeeze_extra. With after_contact=None nothing here runs and the grasp is the
+    # tested one.
+    probe_total = [0.0]
+
+    def probe(amount, settle_sim_s=0.3):
+        """Close every contacted finger a further `amount` rad, wait settle_sim_s of
+        simulated time, and report how far each actually moved and how its load changed."""
+        groups = [g for g in FINGER_GROUPS if contacted[g]]
+        before = {}
+        for g in groups:
+            pos, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))
+            before[g] = (pos, abs(eff or 0.0))
+        for g in groups:
+            current[g] = min(current[g] + amount, MAX_PITCH_CEILING)
+        node.command_fingers(current, STEP_COMMAND_TIME, thumb_yaw=THUMB_GRASP_YAW,
+                             thumb_roll=THUMB_ROLL)
+        wait_until_sim(node, current_sim_time(node), settle_sim_s, wall_cap=60.0)
+        out = {}
+        for g in groups:
+            pos, _, eff = node.latest_joint_state.get(f"{g}_Pitch", (None, None, None))
+            p0, e0 = before[g]
+            out[g] = {"commanded_rad": amount,
+                      "moved_rad": None if (pos is None or p0 is None) else pos - p0,
+                      "effort_before_nm": e0, "effort_after_nm": abs(eff or 0.0)}
+        probe_total[0] += amount
+        return out
+
+    if after_contact is not None:
+        override = after_contact(node, {"contacted": dict(contacted), "probe": probe,
+                                        "squeeze_extra": squeeze_extra}) or {}
+        if "squeeze_extra" in override:
+            squeeze_extra = float(override["squeeze_extra"])
+            print(f"  squeeze chosen after contact: {squeeze_extra:.3f} rad past first "
+                  f"contact ({probe_total[0]:.3f} rad of it already used by the probe)")
+
     # Squeeze phase: close past first contact so the fingers actually hold.
     # Measure what the squeeze itself costs. Fingers reach 1.500Nm -- the joint cap,
     # genuine hard contact -- and then finish at 0.00-0.02Nm holding nothing, while the
     # apple moves 4.7-5.1cm in that same phase. The squeeze is the prime suspect for
     # pushing the apple out of the hand it just closed around.
     before_squeeze = apple_xyz(node)
-    squeezed = 0.0
+    squeezed = probe_total[0]
     while squeezed < squeeze_extra:
         squeezed += SQUEEZE_STEP
         for g in FINGER_GROUPS:
@@ -1274,7 +1314,7 @@ def apple_xyz(node):
 
 def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
             cap_thumb=False, empty=False, relax=False, finish_grasp_move=False,
-            before_close=None, recentre=False, thumb_mode="spike"):
+            before_close=None, recentre=False, thumb_mode="spike", after_contact=None):
     """One full grasp attempt: reset, approach, close, lift, measure.
 
     before_close, if given, is called as before_close(node) once the hand is in position
@@ -1799,7 +1839,7 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
     contacted, peak = close_and_measure(
         node, start_pitch=preshape, apple_local=apple_now,
         radius=APPLE_RADIUS.get(target_name, 0.0555), thumb_yaw=THUMB_GRASP_YAW,
-        squeeze_extra=squeeze_extra)
+        squeeze_extra=squeeze_extra, after_contact=after_contact)
     n = sum(contacted.values())
     REC["contacts"] = n
     print(f"  fingers contacted: {n}/5")

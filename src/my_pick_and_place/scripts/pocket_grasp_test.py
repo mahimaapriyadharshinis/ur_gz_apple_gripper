@@ -1232,6 +1232,12 @@ def close_and_measure(node, start_pitch=0.0, apple_local=None, radius=None,
     print(f"  after squeeze ({n_sq}/5 fingers had contact to squeeze), holding force "
           f"(strongest of each finger's 3 joints): "
           + ", ".join("%s=%.2f" % (g, holding[g]) for g in FINGER_GROUPS))
+    # Simulation clock at this moment, so fingertip-sensor logs (tactile_check.py --csv,
+    # which records the same /joint_states stamp) can be cut into phases of the grasp.
+    stamp = getattr(node, "joint_stamp", None)
+    if stamp is not None:
+        REC["sim_after_squeeze"] = stamp
+        print(f"  [phase] squeeze finished at sim t={stamp:.3f}s")
 
     known = {g: h for g, h in contact_height.items() if h is not None}
     if known:
@@ -1867,6 +1873,10 @@ def attempt(node, target_name, palm_tilt, preshape, lateral, method, drop=0.0,
         REC["thumb_at_lift"] = loads0["R_Thumb"]
         print("  at lift start, load (strongest joint): "
               + ", ".join(f"{g.replace('R_', '')}={loads0[g]:.2f}" for g in FINGER_GROUPS))
+        stamp = getattr(node, "joint_stamp", None)
+        if stamp is not None:
+            REC["sim_lift_start"] = stamp
+            print(f"  [phase] lift started at sim t={stamp:.3f}s")
         node.send_arm_trajectory(lift[0], LIFT_SECONDS)
         trace = []
         slip_at = None
